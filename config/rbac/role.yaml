@@ -1,0 +1,26 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: upnp-controller
+rules:
+  - apiGroups: ["upnp.k8s.io"]
+    resources: ["portmappings"]
+    verbs: ["get", "list", "watch", "update", "patch", "delete"]
+  - apiGroups: ["upnp.k8s.io"]
+    resources: ["portmappings/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["upnp.k8s.io"]
+    resources: ["gatewaystatuses"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["upnp.k8s.io"]
+    resources: ["gatewaystatuses/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "patch"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "create", "update"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]

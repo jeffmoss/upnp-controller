@@ -1,0 +1,12 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: upnp-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: upnp-controller
+subjects:
+  - kind: ServiceAccount
+    name: upnp-controller
+    namespace: upnp-controller

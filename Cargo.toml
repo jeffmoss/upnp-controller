@@ -1,0 +1,52 @@
+[package]
+name = "upnp-controller"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "upnp-controller"
+path = "src/main.rs"
+
+[dependencies]
+# Kubernetes
+kube = { version = "0.99", features = ["runtime", "derive", "client", "rustls-tls"], default-features = false }
+k8s-openapi = { version = "0.24", features = ["v1_31"] }
+schemars = { version = "0.8", features = ["derive", "chrono"] }
+
+# Async
+tokio = { version = "1", features = ["full"] }
+
+# UPnP
+igd-next = { version = "0.15", features = ["aio_tokio"] }
+rupnp = "2.0"
+
+# HTTP
+axum = "0.7"
+reqwest = { version = "0.13", features = ["json", "rustls"], default-features = false }
+hyper = { version = "1", features = ["server", "http1"] }
+tower = "0.5"
+
+# Prometheus
+prometheus = "0.13"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+quick-xml = { version = "0.36", features = ["serialize"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# Utilities
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+futures = "0.3"
+tokio-stream = "0.1"
+
+[dev-dependencies]
+tokio-test = "0.4"

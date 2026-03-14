@@ -1,0 +1,11 @@
+apiVersion: upnp.k8s.io/v1alpha1
+kind: PortMapping
+metadata:
+  name: minecraft
+  namespace: default
+spec:
+  externalPort: 25565
+  internalHost: "192.168.0.50"
+  internalPort: 25565
+  protocol: TCP
+  description: "Minecraft server"
