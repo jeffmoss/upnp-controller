@@ -13,6 +13,7 @@ path = "src/lib.rs"
 
 [features]
 e2e = []
+e2e_kvm = ["e2e"]
 
 [dependencies]
 # Kubernetes

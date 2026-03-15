@@ -16,6 +16,8 @@ pub struct GatewayStatusStatus {
     pub subscription_expiry: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_seen: Option<DateTime<Utc>>,
+    #[serde(rename = "lanIP", skip_serializing_if = "Option::is_none")]
+    pub lan_ip: Option<String>,
     #[serde(default)]
     pub ready: bool,
 }

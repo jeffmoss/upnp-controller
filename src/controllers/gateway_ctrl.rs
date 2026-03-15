@@ -86,6 +86,7 @@ pub async fn reconcile(gs: Arc<GatewayStatus>, ctx: Arc<GatewayContext>) -> Resu
             old.external_ip != external_ip
                 || old.gateway_url.as_deref() != Some(&ctx.gateway_url)
                 || old.subscription_id != sid
+                || old.lan_ip != ctx.config.lan_ip
                 || old.ready != external_ip.is_some()
         }
     };
@@ -97,6 +98,7 @@ pub async fn reconcile(gs: Arc<GatewayStatus>, ctx: Arc<GatewayContext>) -> Resu
             subscription_id: sid,
             subscription_expiry: None,
             last_seen: Some(now),
+            lan_ip: ctx.config.lan_ip.clone(),
             ready: external_ip.is_some(),
         };
 

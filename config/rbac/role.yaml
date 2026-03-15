@@ -5,7 +5,7 @@ metadata:
 rules:
   - apiGroups: ["upnp.k8s.io"]
     resources: ["portmappings"]
-    verbs: ["get", "list", "watch", "update", "patch", "delete"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["upnp.k8s.io"]
     resources: ["portmappings/status"]
     verbs: ["get", "update", "patch"]
@@ -15,6 +15,9 @@ rules:
   - apiGroups: ["upnp.k8s.io"]
     resources: ["gatewaystatuses/status"]
     verbs: ["get", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["services", "pods"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["get", "list", "patch"]

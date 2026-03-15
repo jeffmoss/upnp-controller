@@ -6,7 +6,7 @@ use upnp_controller::upnp;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use axum::{
     extract::State,
     http::StatusCode,
@@ -19,10 +19,10 @@ use kube::Client;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
-use config::Config;
+use config::{Config, detect_lan_ip, parse_host};
 use metrics::Metrics;
 use upnp::{
-    discovery::discover_gateway,
+    discovery::{discover_gateway, ssdp_discover},
     eventing::{parse_notify_body, subscribe, run_renewal_loop, EventingState},
     port_mapping::UpnpClient,
 };
@@ -35,7 +35,7 @@ struct AppState {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cfg = Config::from_env();
+    let mut cfg = Config::from_env();
 
     // Init tracing
     tracing_subscriber::fmt()
@@ -58,12 +58,40 @@ async fn main() -> Result<()> {
         .context("Failed to connect to Kubernetes")?;
     info!("Connected to Kubernetes");
 
-    // Discover gateway services
-    let root_desc_url = cfg
-        .gateway_url
-        .clone()
-        .unwrap_or_else(|| "http://192.168.0.1:5000/rootDesc.xml".to_string());
+    // SSDP discovery
+    let ssdp_url = ssdp_discover(Duration::from_secs(3)).await;
+    if let Some(ref url) = ssdp_url {
+        info!("SSDP discovered gateway: {}", url);
+    }
 
+    // Resolve gateway URL
+    let root_desc_url = match (&cfg.gateway_url, &ssdp_url) {
+        (Some(configured), Some(discovered)) => {
+            if configured != discovered {
+                warn!(
+                    "SSDP discovered {} but GATEWAY_URL is {}, using GATEWAY_URL",
+                    discovered, configured
+                );
+            }
+            configured.clone()
+        }
+        (Some(configured), None) => configured.clone(),
+        (None, Some(discovered)) => discovered.clone(),
+        (None, None) => bail!("No gateway found via SSDP and GATEWAY_URL not set"),
+    };
+
+    // Detect LAN IP from gateway host
+    if let Some(host) = parse_host(&root_desc_url) {
+        match detect_lan_ip(&host) {
+            Ok(ip) => {
+                info!("Detected LAN IP: {}", ip);
+                cfg.lan_ip = Some(ip);
+            }
+            Err(e) => warn!("Could not detect LAN IP: {}", e),
+        }
+    }
+
+    // Discover gateway services
     let gateway_services = discover_gateway(&root_desc_url)
         .await
         .context("Failed to discover gateway services")?;
@@ -91,70 +119,65 @@ async fn main() -> Result<()> {
         Err(e) => warn!("Could not get initial external IP: {}", e),
     }
 
-    // Subscribe to GENA events
-    let callback_url = cfg.notify_callback_url();
-    let gena_active = if let Some(ref event_url) = event_url {
-        match subscribe(event_url, &callback_url, 1800).await {
-            Ok(sid) => {
-                info!("GENA subscribed: SID={}", sid);
-                *subscription_id.write().await = Some(sid.clone());
-                metrics.gena_subscription_active.set(1.0);
+    // Subscribe to GENA events (if enabled)
+    let gena_active = if cfg.gena_enabled {
+        let callback_url = cfg.notify_callback_url();
+        if let Some(ref event_url) = event_url {
+            match subscribe(event_url, &callback_url, 1800).await {
+                Ok(sid) => {
+                    info!("GENA subscribed: SID={}", sid);
+                    *subscription_id.write().await = Some(sid.clone());
+                    metrics.gena_subscription_active.set(1.0);
 
-                // Start renewal loop
-                let state_clone = eventing_state.clone();
-                let event_url_clone = event_url.clone();
-                tokio::spawn(run_renewal_loop(event_url_clone, state_clone, 1800));
+                    // Start renewal loop
+                    let state_clone = eventing_state.clone();
+                    let event_url_clone = event_url.clone();
+                    tokio::spawn(run_renewal_loop(event_url_clone, state_clone, 1800));
 
-                true
+                    true
+                }
+                Err(e) => {
+                    warn!("GENA subscribe failed: {}; falling back to fast polling", e);
+                    metrics.gena_subscription_active.set(0.0);
+                    false
+                }
             }
-            Err(e) => {
-                warn!("GENA subscribe failed: {}; falling back to polling", e);
-                metrics.gena_subscription_active.set(0.0);
-                false
-            }
+        } else {
+            warn!("No event URL found; using polling only");
+            false
         }
     } else {
-        warn!("No event URL found; using polling only");
+        info!("GENA disabled by configuration");
         false
     };
 
-    // Start polling fallback
+    // Adaptive polling
+    let poll_interval = if gena_active {
+        cfg.poll_interval_secs
+    } else {
+        cfg.poll_interval_fast_secs
+    };
+    info!("Polling interval: {}s (GENA {})", poll_interval, if gena_active { "active" } else { "inactive" });
     {
         let upnp_clone = upnp_client.clone();
         let state_clone = eventing_state.clone();
         let metrics_clone = metrics.clone();
-        let poll_interval = cfg.poll_interval_secs;
-        let gena_was_active = gena_active;
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(poll_interval));
             loop {
                 interval.tick().await;
-
-                // Check if GENA has been silent
-                let should_poll = {
-                    let last_notify = state_clone.last_notify.read().await;
-                    match *last_notify {
-                        None => true,
-                        Some(t) => {
-                            t.elapsed() > Duration::from_secs(600) // 10 minutes
+                match upnp_clone.get_external_ip().await {
+                    Ok(ip) => {
+                        let mut current = state_clone.current_external_ip.write().await;
+                        if current.as_deref() != Some(&ip) {
+                            info!("WAN IP changed (poll): {} -> {}", current.as_deref().unwrap_or("none"), ip);
+                            metrics_clone.wan_ip_changes.inc();
                         }
+                        *current = Some(ip);
+                        metrics_clone.gateway_last_seen.set(Utc::now().timestamp() as f64);
                     }
-                };
-
-                if should_poll || !gena_was_active {
-                    match upnp_clone.get_external_ip().await {
-                        Ok(ip) => {
-                            let mut current = state_clone.current_external_ip.write().await;
-                            if current.as_deref() != Some(&ip) {
-                                info!("WAN IP changed (poll): {} -> {}", current.as_deref().unwrap_or("none"), ip);
-                                metrics_clone.wan_ip_changes.inc();
-                            }
-                            *current = Some(ip);
-                            metrics_clone.gateway_last_seen.set(Utc::now().timestamp() as f64);
-                        }
-                        Err(e) => warn!("Poll GetExternalIPAddress failed: {}", e),
-                    }
+                    Err(e) => warn!("Poll GetExternalIPAddress failed: {}", e),
                 }
             }
         });
@@ -178,7 +201,9 @@ async fn main() -> Result<()> {
         subscription_id: subscription_id.clone(),
     });
 
-    tokio::spawn(controllers::port_mapping_ctrl::run(pm_ctx));
+    tokio::spawn(controllers::port_mapping_ctrl::run(pm_ctx.clone()));
+    tokio::spawn(controllers::port_mapping_ctrl::run_service_watcher(pm_ctx.clone()));
+    tokio::spawn(controllers::port_mapping_ctrl::run_pod_watcher(pm_ctx));
     tokio::spawn(controllers::gateway_ctrl::run(gw_ctx));
 
     // Start axum server

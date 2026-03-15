@@ -38,6 +38,8 @@ spec:
                 lastSeen:
                   type: string
                   format: date-time
+                lanIP:
+                  type: string
                 ready:
                   type: boolean
       subresources:

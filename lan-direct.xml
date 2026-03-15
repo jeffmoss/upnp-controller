@@ -1,0 +1,8 @@
+<network>
+  <name>lan-direct</name>
+  <forward mode="bridge">
+    <!-- Use the physical NIC connected to your LAN (e.g. enp109s0 for wired).
+         Run `ip link` to find yours. WiFi interfaces often don't support macvtap. -->
+    <interface dev="enp109s0"/>
+  </forward>
+</network>

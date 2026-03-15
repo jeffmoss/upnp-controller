@@ -1,8 +1,51 @@
+use std::time::Duration;
+
 use anyhow::{Context, Result};
 use quick_xml::events::Event;
 use quick_xml::Reader;
 use reqwest::Client;
+use tokio::net::UdpSocket;
 use tracing::{debug, info};
+
+const SSDP_MULTICAST_ADDR: &str = "239.255.255.250:1900";
+
+const SSDP_SEARCH: &str = "\
+M-SEARCH * HTTP/1.1\r\n\
+HOST: 239.255.255.250:1900\r\n\
+MAN: \"ssdp:discover\"\r\n\
+MX: 2\r\n\
+ST: urn:schemas-upnp-org:device:InternetGatewayDevice:1\r\n\
+\r\n";
+
+/// Send SSDP M-SEARCH multicast and wait for an InternetGatewayDevice response.
+/// Returns the LOCATION URL from the first response, or None on timeout.
+pub async fn ssdp_discover(timeout: Duration) -> Option<String> {
+    let socket = UdpSocket::bind("0.0.0.0:0").await.ok()?;
+    socket.send_to(SSDP_SEARCH.as_bytes(), SSDP_MULTICAST_ADDR).await.ok()?;
+
+    let mut buf = [0u8; 2048];
+    match tokio::time::timeout(timeout, socket.recv_from(&mut buf)).await {
+        Ok(Ok((len, _addr))) => {
+            let response = String::from_utf8_lossy(&buf[..len]);
+            parse_ssdp_location(&response)
+        }
+        _ => None,
+    }
+}
+
+/// Parse the LOCATION header from an SSDP M-SEARCH response.
+pub fn parse_ssdp_location(response: &str) -> Option<String> {
+    for line in response.lines() {
+        if let Some(value) = line.strip_prefix("LOCATION:").or_else(|| line.strip_prefix("Location:")) {
+            return Some(value.trim().to_string());
+        }
+        // Case-insensitive fallback
+        if line.len() > 9 && line[..9].eq_ignore_ascii_case("location:") {
+            return Some(line[9..].trim().to_string());
+        }
+    }
+    None
+}
 
 #[derive(Debug, Clone)]
 pub struct GatewayServices {
@@ -178,6 +221,35 @@ mod tests {
         assert_eq!(
             base_url_from("http://192.168.0.1:5000/rootDesc.xml"),
             "http://192.168.0.1:5000"
+        );
+    }
+
+    #[test]
+    fn test_parse_ssdp_location() {
+        let response = "HTTP/1.1 200 OK\r\n\
+            CACHE-CONTROL: max-age=1800\r\n\
+            ST: urn:schemas-upnp-org:device:InternetGatewayDevice:1\r\n\
+            LOCATION: http://192.168.0.1:5000/rootDesc.xml\r\n\
+            SERVER: Linux UPnP/1.0\r\n\
+            \r\n";
+        assert_eq!(
+            parse_ssdp_location(response),
+            Some("http://192.168.0.1:5000/rootDesc.xml".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_ssdp_location_missing() {
+        let response = "HTTP/1.1 200 OK\r\nST: something\r\n\r\n";
+        assert_eq!(parse_ssdp_location(response), None);
+    }
+
+    #[test]
+    fn test_parse_ssdp_location_case_insensitive() {
+        let response = "HTTP/1.1 200 OK\r\nlocation: http://10.0.0.1:80/desc.xml\r\n\r\n";
+        assert_eq!(
+            parse_ssdp_location(response),
+            Some("http://10.0.0.1:80/desc.xml".to_string())
         );
     }
 }
