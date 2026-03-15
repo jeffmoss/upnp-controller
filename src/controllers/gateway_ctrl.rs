@@ -70,7 +70,7 @@ async fn ensure_singleton(api: &Api<GatewayStatus>) {
     }
 }
 
-async fn reconcile(_gs: Arc<GatewayStatus>, ctx: Arc<GatewayContext>) -> Result<Action, kube::Error> {
+pub async fn reconcile(gs: Arc<GatewayStatus>, ctx: Arc<GatewayContext>) -> Result<Action, kube::Error> {
     let api: Api<GatewayStatus> = Api::all(ctx.client.clone());
 
     // Read current eventing state
@@ -78,26 +78,43 @@ async fn reconcile(_gs: Arc<GatewayStatus>, ctx: Arc<GatewayContext>) -> Result<
     let sid = ctx.subscription_id.read().await.clone();
 
     let now = Utc::now();
-    let status = GatewayStatusStatus {
-        external_ip: external_ip.clone(),
-        gateway_url: Some(ctx.gateway_url.clone()),
-        subscription_id: sid,
-        subscription_expiry: None, // Updated by eventing loop
-        last_seen: Some(now),
-        ready: external_ip.is_some(),
+
+    // Only patch status if something meaningful changed (avoid infinite reconcile loop)
+    let needs_update = match &gs.status {
+        None => true,
+        Some(old) => {
+            old.external_ip != external_ip
+                || old.gateway_url.as_deref() != Some(&ctx.gateway_url)
+                || old.subscription_id != sid
+                || old.ready != external_ip.is_some()
+        }
     };
 
-    // Patch GatewayStatus
-    let patch = json!({ "status": status });
-    if let Err(e) = api
-        .patch_status(
-            GATEWAY_STATUS_NAME,
-            &PatchParams::apply("upnp-controller"),
-            &Patch::Merge(&patch),
-        )
-        .await
-    {
-        warn!("Failed to patch GatewayStatus status: {}", e);
+    if needs_update {
+        let status = GatewayStatusStatus {
+            external_ip: external_ip.clone(),
+            gateway_url: Some(ctx.gateway_url.clone()),
+            subscription_id: sid,
+            subscription_expiry: None,
+            last_seen: Some(now),
+            ready: external_ip.is_some(),
+        };
+
+        let patch = json!({
+            "apiVersion": "upnp.k8s.io/v1alpha1",
+            "kind": "GatewayStatus",
+            "status": status
+        });
+        if let Err(e) = api
+            .patch_status(
+                GATEWAY_STATUS_NAME,
+                &PatchParams::apply("upnp-controller").force(),
+                &Patch::Apply(&patch),
+            )
+            .await
+        {
+            warn!("Failed to patch GatewayStatus status: {}", e);
+        }
     }
 
     // Annotate node if configured

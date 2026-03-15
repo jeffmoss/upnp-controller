@@ -24,7 +24,7 @@ impl std::fmt::Display for Protocol {
 pub struct PortMappingStatus {
     #[serde(default)]
     pub active: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "externalIP", skip_serializing_if = "Option::is_none")]
     pub external_ip: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lease_expiry: Option<DateTime<Utc>>,

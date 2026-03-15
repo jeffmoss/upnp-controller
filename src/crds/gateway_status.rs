@@ -6,11 +6,11 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct GatewayStatusStatus {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "externalIP", skip_serializing_if = "Option::is_none")]
     pub external_ip: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "gatewayURL", skip_serializing_if = "Option::is_none")]
     pub gateway_url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "subscriptionID", skip_serializing_if = "Option::is_none")]
     pub subscription_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subscription_expiry: Option<DateTime<Utc>>,

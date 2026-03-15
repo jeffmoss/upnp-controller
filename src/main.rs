@@ -1,9 +1,7 @@
-mod config;
-mod crds;
-mod controllers;
-mod metrics;
-mod node;
-mod upnp;
+use upnp_controller::config;
+use upnp_controller::controllers;
+use upnp_controller::metrics;
+use upnp_controller::upnp;
 
 use std::sync::Arc;
 use std::time::Duration;

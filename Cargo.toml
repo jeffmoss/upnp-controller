@@ -7,6 +7,13 @@ edition = "2021"
 name = "upnp-controller"
 path = "src/main.rs"
 
+[lib]
+name = "upnp_controller"
+path = "src/lib.rs"
+
+[features]
+e2e = []
+
 [dependencies]
 # Kubernetes
 kube = { version = "0.99", features = ["runtime", "derive", "client", "rustls-tls"], default-features = false }

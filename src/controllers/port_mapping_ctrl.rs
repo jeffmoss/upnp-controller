@@ -58,7 +58,7 @@ impl From<anyhow::Error> for ReconcileError {
     }
 }
 
-async fn reconcile(pm: Arc<PortMapping>, ctx: Arc<PortMappingContext>) -> Result<Action, ReconcileError> {
+pub async fn reconcile(pm: Arc<PortMapping>, ctx: Arc<PortMappingContext>) -> Result<Action, ReconcileError> {
     let ns = pm.namespace().unwrap_or_else(|| "default".to_string());
     let api: Api<PortMapping> = Api::namespaced(ctx.client.clone(), &ns);
 
@@ -212,11 +212,15 @@ async fn reconcile_cleanup(
 }
 
 async fn patch_status(api: &Api<PortMapping>, name: &str, status: &PortMappingStatus) -> Result<(), ReconcileError> {
-    let patch = json!({ "status": status });
+    let patch = json!({
+        "apiVersion": "upnp.k8s.io/v1alpha1",
+        "kind": "PortMapping",
+        "status": status
+    });
     api.patch_status(
         name,
-        &PatchParams::apply("upnp-controller"),
-        &Patch::Merge(&patch),
+        &PatchParams::apply("upnp-controller").force(),
+        &Patch::Apply(&patch),
     )
     .await?;
     Ok(())
