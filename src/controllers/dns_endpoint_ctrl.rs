@@ -172,7 +172,13 @@ async fn reconcile(
         }
     };
 
-    patch_targets(&ep, &ctx.client, &wan_ip).await;
+    // Skip if all A record targets already match
+    let correct = ep.spec.endpoints.iter().all(|e| {
+        e.record_type != "A" || e.targets == vec![wan_ip.clone()]
+    });
+    if !correct {
+        patch_targets(&ep, &ctx.client, &wan_ip).await;
+    }
     Ok(Action::requeue(Duration::from_secs(300)))
 }
 
