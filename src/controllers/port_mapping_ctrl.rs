@@ -306,6 +306,7 @@ async fn cleanup_owned_port_mappings(pm_api: &Api<PortMapping>, owned: &[PortMap
 }
 
 /// Apply desired PortMappings and delete stale ones.
+#[allow(clippy::too_many_arguments)]
 async fn apply_port_mappings(
     pm_api: &Api<PortMapping>,
     ns: &str,

@@ -141,14 +141,9 @@ impl UpnpClient {
     pub async fn list_port_mappings(&self) -> Result<Vec<PortMappingEntry>> {
         let mut mappings = Vec::new();
         let mut index = 0u32;
-        loop {
-            match self.get_generic_port_mapping_entry(index).await? {
-                Some(entry) => {
-                    mappings.push(entry);
-                    index += 1;
-                }
-                None => break,
-            }
+        while let Some(entry) = self.get_generic_port_mapping_entry(index).await? {
+            mappings.push(entry);
+            index += 1;
         }
         Ok(mappings)
     }
