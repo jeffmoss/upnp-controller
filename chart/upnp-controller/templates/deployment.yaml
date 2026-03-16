@@ -23,7 +23,7 @@ spec:
     spec:
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
-      serviceAccountName: upnp-controller
+      serviceAccountName: {{ .Values.serviceAccount.name }}
       terminationGracePeriodSeconds: 90
       containers:
         - name: controller

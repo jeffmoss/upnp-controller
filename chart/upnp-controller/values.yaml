@@ -17,6 +17,13 @@ polling:
   interval: 600       # when GENA is active (backup)
   fastInterval: 10    # when GENA is unavailable
 
+rbac:
+  create: true
+
+serviceAccount:
+  create: true
+  name: upnp-controller
+
 resources:
   requests:
     cpu: 10m

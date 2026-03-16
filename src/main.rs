@@ -17,7 +17,7 @@ use axum::{
 use chrono::Utc;
 use kube::Client;
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use config::{Config, detect_lan_ip, parse_host};
 use upnp_controller::proxy::ProxyManager;
@@ -256,12 +256,15 @@ async fn main() -> Result<()> {
 
     // Wait for shutdown signal
     shutdown_signal().await;
-    info!("Received shutdown signal, cleaning up...");
+    info!("Received shutdown signal");
 
-    // Tell reconcilers to stop creating/patching resources
+    // Stop annotation watchers from creating new PortMappings
     pm_ctx.shutting_down.store(true, std::sync::atomic::Ordering::Relaxed);
 
-    graceful_shutdown(&client, &upnp_client.clone()).await;
+    // Give the controller time to process any pending finalizer cleanups
+    // (CRD deletion triggers CR deletion which triggers our finalizer → DeletePortMapping)
+    info!("Waiting for pending cleanups...");
+    tokio::time::sleep(Duration::from_secs(5)).await;
     info!("Shutdown complete");
 
     Ok(())
@@ -306,51 +309,3 @@ async fn shutdown_signal() {
     ctrl_c.await.ok();
 }
 
-/// Delete all PortMapping CRs and wait for finalization to complete.
-/// The reconcile loop is still running, so the finalizer fires normally:
-/// reconcile_cleanup → DeletePortMapping on router → remove finalizer → k8s GC.
-async fn graceful_shutdown(client: &Client, _upnp: &Arc<UpnpClient>) {
-    use kube::api::{Api, DeleteParams, ListParams};
-    use upnp_controller::crds::port_mapping::PortMapping;
-
-    let api: Api<PortMapping> = Api::all(client.clone());
-    let pms = match api.list(&ListParams::default()).await {
-        Ok(list) => list.items,
-        Err(e) => {
-            warn!("Failed to list PortMappings during shutdown: {}", e);
-            return;
-        }
-    };
-
-    info!("Graceful shutdown: deleting {} PortMappings", pms.len());
-    for pm in &pms {
-        let name = pm.metadata.name.as_deref().unwrap_or("?");
-        let ns = pm.metadata.namespace.as_deref().unwrap_or("default");
-        let ns_api: Api<PortMapping> = Api::namespaced(client.clone(), ns);
-        match ns_api.delete(name, &DeleteParams::default()).await {
-            Ok(_) => info!("Shutdown: deleted {}/{}", ns, name),
-            Err(e) => warn!("Shutdown: failed to delete {}/{}: {}", ns, name, e),
-        }
-    }
-
-    // Delete GatewayStatus singleton
-    let gs_api: Api<upnp_controller::crds::gateway_status::GatewayStatus> = Api::all(client.clone());
-    match gs_api.delete("default", &DeleteParams::default()).await {
-        Ok(_) => info!("Shutdown: deleted GatewayStatus/default"),
-        Err(e) => warn!("Shutdown: failed to delete GatewayStatus: {}", e),
-    }
-
-    // Wait for all resources to be fully gone (finalizers processed by reconcile loops)
-    loop {
-        let pm_count = api.list(&ListParams::default()).await
-            .map(|list| list.items.len()).unwrap_or(0);
-        let gs_exists = gs_api.get("default").await.is_ok();
-
-        if pm_count == 0 && !gs_exists {
-            info!("Shutdown: all resources cleaned up");
-            break;
-        }
-        debug!("Shutdown: waiting for {} PortMappings, GatewayStatus={}", pm_count, if gs_exists { "exists" } else { "gone" });
-        tokio::time::sleep(Duration::from_secs(1)).await;
-    }
-}
