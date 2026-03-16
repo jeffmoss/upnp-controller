@@ -20,12 +20,12 @@ use crate::crds::port_mapping::{Condition, PortMapping, PortMappingStatus, Proto
 use crate::metrics::Metrics;
 use crate::upnp::port_mapping::UpnpClient;
 
-const FINALIZER: &str = "upnp.k8s.io/cleanup";
+const FINALIZER: &str = "upnp-controller.io/cleanup";
 const DEFAULT_LEASE_SECS: u32 = 3600;
 const RENEWAL_BUFFER_SECS: i64 = 30;
 
-const PORT_FORWARD_ANNOTATION: &str = "upnp.k8s.io/port-forward";
-const MANAGED_BY_LABEL: &str = "upnp.k8s.io/managed-by";
+const PORT_FORWARD_ANNOTATION: &str = "upnp-controller.io/port-forward";
+const MANAGED_BY_LABEL: &str = "upnp-controller.io/managed-by";
 const MANAGED_BY_VALUE: &str = "service-controller";
 
 pub struct PortMappingContext {
@@ -218,7 +218,7 @@ async fn reconcile_cleanup(
 
 async fn patch_status(api: &Api<PortMapping>, name: &str, status: &PortMappingStatus) -> Result<(), ReconcileError> {
     let patch = json!({
-        "apiVersion": "upnp.k8s.io/v1alpha1",
+        "apiVersion": "upnp-controller.io/v1alpha1",
         "kind": "PortMapping",
         "status": status
     });
@@ -245,7 +245,7 @@ fn error_policy(
 // ---------------------------------------------------------------------------
 
 /// Run the Service annotation watcher. Watches LoadBalancer Services for the
-/// `upnp.k8s.io/port-forward` annotation and creates/deletes PortMapping CRs.
+/// `upnp-controller.io/port-forward` annotation and creates/deletes PortMapping CRs.
 pub async fn run_service_watcher(ctx: Arc<PortMappingContext>) {
     let services: Api<Service> = Api::all(ctx.client.clone());
     Controller::new(services, Config::default())
@@ -259,7 +259,7 @@ pub async fn run_service_watcher(ctx: Arc<PortMappingContext>) {
 }
 
 /// Run the Pod annotation watcher. Watches Pods for the
-/// `upnp.k8s.io/port-forward` annotation and creates/deletes PortMapping CRs.
+/// `upnp-controller.io/port-forward` annotation and creates/deletes PortMapping CRs.
 pub async fn run_pod_watcher(ctx: Arc<PortMappingContext>) {
     let pods: Api<Pod> = Api::all(ctx.client.clone());
     Controller::new(pods, Config::default())
@@ -327,7 +327,7 @@ async fn apply_port_mappings(
         let name = &desired_names[i];
 
         let pm_manifest = json!({
-            "apiVersion": "upnp.k8s.io/v1alpha1",
+            "apiVersion": "upnp-controller.io/v1alpha1",
             "kind": "PortMapping",
             "metadata": {
                 "name": name,

@@ -3,16 +3,16 @@ kind: ClusterRole
 metadata:
   name: upnp-controller
 rules:
-  - apiGroups: ["upnp.k8s.io"]
+  - apiGroups: ["upnp-controller.io"]
     resources: ["portmappings"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  - apiGroups: ["upnp.k8s.io"]
+  - apiGroups: ["upnp-controller.io"]
     resources: ["portmappings/status"]
     verbs: ["get", "update", "patch"]
-  - apiGroups: ["upnp.k8s.io"]
+  - apiGroups: ["upnp-controller.io"]
     resources: ["gatewaystatuses"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
-  - apiGroups: ["upnp.k8s.io"]
+  - apiGroups: ["upnp-controller.io"]
     resources: ["gatewaystatuses/status"]
     verbs: ["get", "update", "patch"]
   - apiGroups: [""]

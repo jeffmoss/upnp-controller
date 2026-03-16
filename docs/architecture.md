@@ -143,7 +143,7 @@ stateDiagram-v2
 
 ### Key implementation details
 
-- **Finalizer**: `upnp.k8s.io/cleanup` -- added on first reconcile, removed after cleanup
+- **Finalizer**: `upnp-controller.io/cleanup` -- added on first reconcile, removed after cleanup
 - **Lease duration**: default 3600 seconds (1 hour), requested via `NewLeaseDuration` SOAP parameter
 - **Renewal buffer**: 30 seconds before expiry, the controller requeues to renew
 - **Failure requeue**: 60 seconds on `AddPortMapping` failure
@@ -237,7 +237,7 @@ graph LR
 1. User creates a `PortMapping` CR via `kubectl apply`
 2. The Kubernetes API stores the resource and fires a watch event
 3. The PortMapping controller receives the event and runs `reconcile_apply`
-4. The controller adds the `upnp.k8s.io/cleanup` finalizer if not present
+4. The controller adds the `upnp-controller.io/cleanup` finalizer if not present
 5. The UPnP client sends an `AddPortMapping` SOAP request to the router
 6. On success, the controller patches the CR status with `active: true`, the external IP, lease expiry, and an `Active` condition
 7. The controller requeues itself for ~30 seconds before lease expiry to renew

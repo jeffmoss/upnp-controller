@@ -30,10 +30,10 @@ mod tests {
         let client = Client::try_default().await.expect("kubeconfig required");
         let crds: Api<CustomResourceDefinition> = Api::all(client);
 
-        let pm = crds.get("portmappings.upnp.k8s.io").await;
+        let pm = crds.get("portmappings.upnp-controller.io").await;
         assert!(pm.is_ok(), "PortMapping CRD not found");
 
-        let gs = crds.get("gatewaystatuses.upnp.k8s.io").await;
+        let gs = crds.get("gatewaystatuses.upnp-controller.io").await;
         assert!(gs.is_ok(), "GatewayStatus CRD not found");
     }
 
@@ -229,7 +229,7 @@ mod tests {
         // Create PortMapping: external 29999 -> node LAN IP:18999
         // Using hostNetwork so the pod listens directly on the node's IP.
         let pm_manifest = serde_json::json!({
-            "apiVersion": "upnp.k8s.io/v1alpha1",
+            "apiVersion": "upnp-controller.io/v1alpha1",
             "kind": "PortMapping",
             "metadata": {
                 "name": "e2e-test-pm",

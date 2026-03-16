@@ -49,7 +49,7 @@ pub struct Condition {
 /// PortMapping is a CRD that represents a UPnP port mapping on the router
 #[derive(CustomResource, Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[kube(
-    group = "upnp.k8s.io",
+    group = "upnp-controller.io",
     version = "v1alpha1",
     kind = "PortMapping",
     namespaced,

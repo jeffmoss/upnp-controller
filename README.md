@@ -31,7 +31,7 @@ kubectl apply -k config/default
 ### Create a PortMapping
 
 ```yaml
-apiVersion: upnp.k8s.io/v1alpha1
+apiVersion: upnp-controller.io/v1alpha1
 kind: PortMapping
 metadata:
   name: minecraft

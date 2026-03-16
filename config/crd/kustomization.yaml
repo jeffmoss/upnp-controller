@@ -2,5 +2,5 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
-  - bases/upnp.k8s.io_portmappings.yaml
-  - bases/upnp.k8s.io_gatewaystatuses.yaml
+  - bases/upnp-controller.io_portmappings.yaml
+  - bases/upnp-controller.io_gatewaystatuses.yaml

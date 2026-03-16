@@ -4,7 +4,7 @@ This document provides a complete reference for the Custom Resource Definitions 
 
 ## PortMapping
 
-**API group**: `upnp.k8s.io/v1alpha1`
+**API group**: `upnp-controller.io/v1alpha1`
 **Scope**: Namespaced
 **Short name**: `pm`
 
@@ -13,7 +13,7 @@ A `PortMapping` represents a single UPnP port forwarding rule on the router. Cre
 ### Full example
 
 ```yaml
-apiVersion: upnp.k8s.io/v1alpha1
+apiVersion: upnp-controller.io/v1alpha1
 kind: PortMapping
 metadata:
   name: minecraft
@@ -66,13 +66,13 @@ minecraft   25565           192.168.0.50     TCP        true     75.169.255.229
 
 ### Finalizer
 
-The controller adds the finalizer `upnp.k8s.io/cleanup` to every `PortMapping`. On deletion, it calls `DeletePortMapping` on the router before allowing the resource to be garbage collected. If the router has already expired the mapping, the finalizer still completes successfully.
+The controller adds the finalizer `upnp-controller.io/cleanup` to every `PortMapping`. On deletion, it calls `DeletePortMapping` on the router before allowing the resource to be garbage collected. If the router has already expired the mapping, the finalizer still completes successfully.
 
 ---
 
 ## GatewayStatus
 
-**API group**: `upnp.k8s.io/v1alpha1`
+**API group**: `upnp-controller.io/v1alpha1`
 **Scope**: Cluster
 **Singleton**: There is exactly one instance, named `default`
 
@@ -81,7 +81,7 @@ The controller adds the finalizer `upnp.k8s.io/cleanup` to every `PortMapping`. 
 ### Full example
 
 ```yaml
-apiVersion: upnp.k8s.io/v1alpha1
+apiVersion: upnp-controller.io/v1alpha1
 kind: GatewayStatus
 metadata:
   name: default
@@ -120,7 +120,7 @@ default   75.169.255.229    true    2026-03-14T15:00:00Z
 ### Forward HTTP traffic to a web server
 
 ```yaml
-apiVersion: upnp.k8s.io/v1alpha1
+apiVersion: upnp-controller.io/v1alpha1
 kind: PortMapping
 metadata:
   name: web-http
@@ -132,7 +132,7 @@ spec:
   protocol: TCP
   description: "Web server HTTP"
 ---
-apiVersion: upnp.k8s.io/v1alpha1
+apiVersion: upnp-controller.io/v1alpha1
 kind: PortMapping
 metadata:
   name: web-https
@@ -148,7 +148,7 @@ spec:
 ### Forward a game server with TCP and UDP
 
 ```yaml
-apiVersion: upnp.k8s.io/v1alpha1
+apiVersion: upnp-controller.io/v1alpha1
 kind: PortMapping
 metadata:
   name: game-tcp
@@ -160,7 +160,7 @@ spec:
   protocol: TCP
   description: "Game server TCP"
 ---
-apiVersion: upnp.k8s.io/v1alpha1
+apiVersion: upnp-controller.io/v1alpha1
 kind: PortMapping
 metadata:
   name: game-udp
@@ -176,7 +176,7 @@ spec:
 ### Forward SSH access
 
 ```yaml
-apiVersion: upnp.k8s.io/v1alpha1
+apiVersion: upnp-controller.io/v1alpha1
 kind: PortMapping
 metadata:
   name: ssh

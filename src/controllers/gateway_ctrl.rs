@@ -101,7 +101,7 @@ pub async fn reconcile(gs: Arc<GatewayStatus>, ctx: Arc<GatewayContext>) -> Resu
         };
 
         let patch = json!({
-            "apiVersion": "upnp.k8s.io/v1alpha1",
+            "apiVersion": "upnp-controller.io/v1alpha1",
             "kind": "GatewayStatus",
             "status": status
         });

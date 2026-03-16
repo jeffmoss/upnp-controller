@@ -7,7 +7,7 @@ use k8s_openapi::api::core::v1::Node;
 use serde_json::json;
 
 #[allow(dead_code)]
-const ANNOTATION_KEY: &str = "upnp.k8s.io/wan-ip";
+const ANNOTATION_KEY: &str = "upnp-controller.io/wan-ip";
 
 #[allow(dead_code)]
 pub async fn annotate_node_with_wan_ip(client: &Client, node_name: &str, wan_ip: &str) -> Result<()> {

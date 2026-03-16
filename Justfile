@@ -23,14 +23,18 @@ cluster-down:
 
 # Build and import container image into the k3s cluster
 build-image:
+    #!/usr/bin/env bash
+    set -euo pipefail
     docker build -t upnp-controller:latest .
     docker save upnp-controller:latest | gzip > /tmp/upnp-controller.tar.gz
-    KUBECONFIG=k3s/kubeconfig kubectl get nodes -o jsonpath='{range .items[*]}{.status.addresses[?(@.type=="InternalIP")].address}{"\n"}{end}' \
-        | while read ip; do \
-            echo "Importing image to $$ip..."; \
-            scp -o StrictHostKeyChecking=no /tmp/upnp-controller.tar.gz k3s@$$ip:/tmp/; \
-            ssh -o StrictHostKeyChecking=no k3s@$$ip "sudo k3s ctr images import /tmp/upnp-controller.tar.gz && rm /tmp/upnp-controller.tar.gz"; \
-        done
+    for node in k3s-server k3s-agent-1 k3s-agent-2; do
+        ip=$(virsh domifaddr "$node" --source lease 2>/dev/null | grep -oP '10\.44\.0\.\d+' | head -1)
+        if [ -n "$ip" ]; then
+            echo "Importing image to $node ($ip)..."
+            scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q /tmp/upnp-controller.tar.gz k3s@"$ip":/tmp/
+            ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null k3s@"$ip" "sudo k3s ctr images import /tmp/upnp-controller.tar.gz && rm /tmp/upnp-controller.tar.gz" 2>/dev/null
+        fi
+    done
     rm -f /tmp/upnp-controller.tar.gz
 
 # === Deploy ===

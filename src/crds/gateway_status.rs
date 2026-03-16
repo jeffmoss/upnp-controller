@@ -25,7 +25,7 @@ pub struct GatewayStatusStatus {
 /// GatewayStatus is a cluster-scoped singleton CRD tracking the router's WAN IP and UPnP subscription state
 #[derive(CustomResource, Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[kube(
-    group = "upnp.k8s.io",
+    group = "upnp-controller.io",
     version = "v1alpha1",
     kind = "GatewayStatus",
     status = "GatewayStatusStatus",

@@ -58,8 +58,8 @@ kubectl apply -k config/crd
 Verify:
 
 ```bash
-kubectl get crd portmappings.upnp.k8s.io
-kubectl get crd gatewaystatuses.upnp.k8s.io
+kubectl get crd portmappings.upnp-controller.io
+kubectl get crd gatewaystatuses.upnp-controller.io
 ```
 
 ### 2. Create namespace and RBAC
@@ -163,7 +163,7 @@ If `READY` is `false`, check the controller logs for gateway discovery errors.
 
 ```bash
 cat <<EOF | kubectl apply -f -
-apiVersion: upnp.k8s.io/v1alpha1
+apiVersion: upnp-controller.io/v1alpha1
 kind: PortMapping
 metadata:
   name: test-mapping
