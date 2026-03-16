@@ -28,10 +28,21 @@ use upnp::{
     port_mapping::UpnpClient,
 };
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Shared flags accessible from main, controllers, and handlers.
+#[derive(Clone)]
+struct Flags {
+    /// DNSEndpoint controller is running (CRD exists)
+    dns_endpoints_active: Arc<AtomicBool>,
+}
+
 #[derive(Clone)]
 struct AppState {
     eventing_state: Arc<EventingState>,
     metrics: Arc<Metrics>,
+    client: Client,
+    flags: Flags,
 }
 
 #[tokio::main]
@@ -158,11 +169,15 @@ async fn main() -> Result<()> {
     } else {
         cfg.poll_interval_fast_secs
     };
+    let dns_active = Arc::new(AtomicBool::new(false));
+
     info!("Polling interval: {}s (GENA {})", poll_interval, if gena_active { "active" } else { "inactive" });
     {
         let upnp_clone = upnp_client.clone();
         let state_clone = eventing_state.clone();
         let metrics_clone = metrics.clone();
+        let dns_active_clone = dns_active.clone();
+        let client_clone = client.clone();
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(poll_interval));
@@ -171,12 +186,17 @@ async fn main() -> Result<()> {
                 match upnp_clone.get_external_ip().await {
                     Ok(ip) => {
                         let mut current = state_clone.current_external_ip.write().await;
-                        if current.as_deref() != Some(&ip) {
+                        let changed = current.as_deref() != Some(&ip);
+                        if changed {
                             info!("WAN IP changed (poll): {} -> {}", current.as_deref().unwrap_or("none"), ip);
                             metrics_clone.wan_ip_changes.inc();
                         }
-                        *current = Some(ip);
+                        *current = Some(ip.clone());
+                        drop(current);
                         metrics_clone.gateway_last_seen.set(Utc::now().timestamp() as f64);
+                        if changed && dns_active_clone.load(Ordering::Relaxed) {
+                            controllers::dns_endpoint_ctrl::update_all_managed(&client_clone, &ip).await;
+                        }
                     }
                     Err(e) => warn!("Poll GetExternalIPAddress failed: {}", e),
                 }
@@ -209,6 +229,7 @@ async fn main() -> Result<()> {
     let dns_ctx = Arc::new(controllers::dns_endpoint_ctrl::DnsEndpointContext {
         client: client.clone(),
         eventing_state: eventing_state.clone(),
+        active: dns_active.clone(),
     });
 
     tokio::spawn(controllers::port_mapping_ctrl::run(pm_ctx.clone()));
@@ -218,9 +239,14 @@ async fn main() -> Result<()> {
     tokio::spawn(controllers::dns_endpoint_ctrl::run(dns_ctx));
 
     // Start axum server
+    let flags = Flags {
+        dns_endpoints_active: dns_active,
+    };
     let state = AppState {
         eventing_state: eventing_state.clone(),
         metrics: metrics.clone(),
+        client: client.clone(),
+        flags: flags.clone(),
     };
 
     let notify_port = cfg.notify_port;
@@ -276,13 +302,18 @@ async fn handle_notify(
 ) -> impl IntoResponse {
     if let Some(ip) = parse_notify_body(&body) {
         let mut current = state.eventing_state.current_external_ip.write().await;
-        if current.as_deref() != Some(&ip) {
+        let changed = current.as_deref() != Some(&ip);
+        if changed {
             info!("WAN IP changed (GENA): {} -> {}", current.as_deref().unwrap_or("none"), ip);
             state.metrics.wan_ip_changes.inc();
         }
-        *current = Some(ip);
+        *current = Some(ip.clone());
+        drop(current);
         *state.eventing_state.last_notify.write().await = Some(tokio::time::Instant::now());
         state.metrics.gateway_last_seen.set(Utc::now().timestamp() as f64);
+        if changed && state.flags.dns_endpoints_active.load(Ordering::Relaxed) {
+            controllers::dns_endpoint_ctrl::update_all_managed(&state.client, &ip).await;
+        }
     }
     StatusCode::OK
 }
