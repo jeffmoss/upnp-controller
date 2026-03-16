@@ -40,6 +40,11 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
+      - name: Package and push Helm chart
+        run: |
+          helm package chart/upnp-controller --version ${GITHUB_REF_NAME#v} --app-version ${GITHUB_REF_NAME#v}
+          helm push upnp-controller-${GITHUB_REF_NAME#v}.tgz oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts
+
       - uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true

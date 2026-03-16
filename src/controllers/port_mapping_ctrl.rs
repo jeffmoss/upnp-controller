@@ -18,6 +18,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::crds::port_mapping::{Condition, PortMapping, PortMappingStatus, Protocol};
 use crate::metrics::Metrics;
+use crate::proxy::ProxyManager;
 use crate::upnp::port_mapping::UpnpClient;
 
 const FINALIZER: &str = "upnp-controller.io/cleanup";
@@ -32,6 +33,7 @@ pub struct PortMappingContext {
     pub client: Client,
     pub upnp: Arc<UpnpClient>,
     pub metrics: Arc<Metrics>,
+    pub proxy_manager: ProxyManager,
 }
 
 pub async fn run(ctx: Arc<PortMappingContext>) {
@@ -305,82 +307,6 @@ async fn cleanup_owned_port_mappings(pm_api: &Api<PortMapping>, owned: &[PortMap
     }
 }
 
-/// Apply desired PortMappings and delete stale ones.
-#[allow(clippy::too_many_arguments)]
-async fn apply_port_mappings(
-    pm_api: &Api<PortMapping>,
-    ns: &str,
-    owner_name: &str,
-    owner_uid: &str,
-    owner_kind: &str,
-    owner_api_version: &str,
-    ip: &str,
-    desired: &[(u16, u16, Protocol)],
-    owned: &[PortMapping],
-) -> Result<Action, ReconcileError> {
-    let desired_names: Vec<String> = desired
-        .iter()
-        .map(|(ext, _int, proto)| pm_name_for_owner(ns, owner_name, *ext, proto))
-        .collect();
-
-    for (i, (external_port, internal_port, protocol)) in desired.iter().enumerate() {
-        let name = &desired_names[i];
-
-        let pm_manifest = json!({
-            "apiVersion": "upnp-controller.io/v1alpha1",
-            "kind": "PortMapping",
-            "metadata": {
-                "name": name,
-                "namespace": ns,
-                "labels": {
-                    MANAGED_BY_LABEL: MANAGED_BY_VALUE
-                },
-                "ownerReferences": [{
-                    "apiVersion": owner_api_version,
-                    "kind": owner_kind,
-                    "name": owner_name,
-                    "uid": owner_uid,
-                    "controller": true,
-                    "blockOwnerDeletion": true
-                }]
-            },
-            "spec": {
-                "externalPort": external_port,
-                "internalHost": ip,
-                "internalPort": internal_port,
-                "protocol": protocol.to_string(),
-                "description": format!("auto:{}/{}", ns, owner_name)
-            }
-        });
-
-        pm_api
-            .patch(
-                name,
-                &PatchParams::apply("upnp-service-controller").force(),
-                &Patch::Apply(&pm_manifest),
-            )
-            .await?;
-
-        info!(
-            "Managed PortMapping {}: {}:{} -> {}:{}",
-            name, external_port, protocol, ip, internal_port
-        );
-    }
-
-    // Delete stale PortMappings
-    for pm in owned {
-        let name = pm.name_any();
-        if !desired_names.contains(&name) {
-            info!("Removing stale managed PortMapping {}", name);
-            if let Err(e) = pm_api.delete(&name, &DeleteParams::default()).await {
-                warn!("Failed to delete stale PortMapping {}: {}", name, e);
-            }
-        }
-    }
-
-    Ok(Action::requeue(Duration::from_secs(60)))
-}
-
 // --- Service reconciler ---
 
 async fn reconcile_service(
@@ -403,38 +329,26 @@ async fn reconcile_service(
     let annotation_value = match annotation_value {
         Some(v) => v,
         None => {
+            // Stop any proxies for this service
+            for pm in &owned {
+                let key = pm.name_any();
+                ctx.proxy_manager.stop_proxy(&key).await;
+            }
             cleanup_owned_port_mappings(&pm_api, &owned).await;
             return Ok(Action::await_change());
         }
     };
 
-    // Only handle LoadBalancer Services
-    let is_lb = svc
+    // Get the ClusterIP — this is what we proxy to
+    let cluster_ip = svc
         .spec
         .as_ref()
-        .map(|s| s.type_.as_deref() == Some("LoadBalancer"))
-        .unwrap_or(false);
-    if !is_lb {
-        debug!("Service {}/{} is not LoadBalancer, ignoring annotation", svc_ns, svc_name);
+        .and_then(|s| s.cluster_ip.as_deref())
+        .unwrap_or("");
+    if cluster_ip.is_empty() || cluster_ip == "None" {
+        debug!("Service {}/{} has no ClusterIP, skipping", svc_ns, svc_name);
         return Ok(Action::await_change());
     }
-
-    // Read the LB IP
-    let lb_ip = svc
-        .status
-        .as_ref()
-        .and_then(|s| s.load_balancer.as_ref())
-        .and_then(|lb| lb.ingress.as_ref())
-        .and_then(|ingress| ingress.first())
-        .and_then(|entry| entry.ip.as_deref());
-
-    let lb_ip = match lb_ip {
-        Some(ip) => ip.to_string(),
-        None => {
-            debug!("Service {}/{} has no LB IP yet, requeuing", svc_ns, svc_name);
-            return Ok(Action::requeue(Duration::from_secs(5)));
-        }
-    };
 
     let service_ports = svc.spec.as_ref().map(|s| s.ports.as_deref().unwrap_or(&[])).unwrap_or(&[]);
     let desired = parse_service_annotation(annotation_value, service_ports);
@@ -444,7 +358,81 @@ async fn reconcile_service(
         return Ok(Action::await_change());
     }
 
-    apply_port_mappings(&pm_api, &svc_ns, &svc_name, svc_uid, "Service", "v1", &lb_ip, &desired, &owned).await
+    let lan_ip = &ctx.proxy_manager.lan_ip;
+
+    // For each desired mapping, start a proxy and create a PortMapping
+    let desired_names: Vec<String> = desired
+        .iter()
+        .map(|(ext, _int, proto)| pm_name_for_owner(&svc_ns, &svc_name, *ext, proto))
+        .collect();
+
+    for (i, (external_port, internal_port, protocol)) in desired.iter().enumerate() {
+        let name = &desired_names[i];
+        let target = format!("{}:{}", cluster_ip, internal_port);
+
+        // Start or update the TCP proxy
+        let proxy_port = match ctx.proxy_manager.ensure_proxy(name, &target).await {
+            Ok(port) => port,
+            Err(e) => {
+                warn!("Failed to start proxy for {}: {}", name, e);
+                continue;
+            }
+        };
+
+        let pm_manifest = json!({
+            "apiVersion": "upnp-controller.io/v1alpha1",
+            "kind": "PortMapping",
+            "metadata": {
+                "name": name,
+                "namespace": svc_ns,
+                "labels": {
+                    MANAGED_BY_LABEL: MANAGED_BY_VALUE
+                },
+                "ownerReferences": [{
+                    "apiVersion": "v1",
+                    "kind": "Service",
+                    "name": svc_name,
+                    "uid": svc_uid,
+                    "controller": true,
+                    "blockOwnerDeletion": true
+                }]
+            },
+            "spec": {
+                "externalPort": external_port,
+                "internalHost": lan_ip,
+                "internalPort": proxy_port,
+                "protocol": protocol.to_string(),
+                "description": format!("auto:{}/{} proxy->{}:{}", svc_ns, svc_name, cluster_ip, internal_port)
+            }
+        });
+
+        pm_api
+            .patch(
+                name,
+                &PatchParams::apply("upnp-service-controller").force(),
+                &Patch::Apply(&pm_manifest),
+            )
+            .await?;
+
+        info!(
+            "Managed PortMapping {}: ext:{} -> {}:{} (proxy) -> {}:{}",
+            name, external_port, lan_ip, proxy_port, cluster_ip, internal_port
+        );
+    }
+
+    // Delete stale PortMappings and stop their proxies
+    for pm in &owned {
+        let name = pm.name_any();
+        if !desired_names.contains(&name) {
+            info!("Removing stale managed PortMapping {}", name);
+            ctx.proxy_manager.stop_proxy(&name).await;
+            if let Err(e) = pm_api.delete(&name, &DeleteParams::default()).await {
+                warn!("Failed to delete stale PortMapping {}: {}", name, e);
+            }
+        }
+    }
+
+    Ok(Action::requeue(Duration::from_secs(60)))
 }
 
 fn service_error_policy(
@@ -478,12 +466,14 @@ async fn reconcile_pod(
     let annotation_value = match annotation_value {
         Some(v) => v,
         None => {
+            for pm in &owned {
+                ctx.proxy_manager.stop_proxy(&pm.name_any()).await;
+            }
             cleanup_owned_port_mappings(&pm_api, &owned).await;
             return Ok(Action::await_change());
         }
     };
 
-    // Read the Pod IP
     let pod_ip = pod
         .status
         .as_ref()
@@ -497,7 +487,6 @@ async fn reconcile_pod(
         }
     };
 
-    // Collect container ports for "true" mode
     let container_ports: Vec<ContainerPort> = pod
         .spec
         .as_ref()
@@ -516,7 +505,77 @@ async fn reconcile_pod(
         return Ok(Action::await_change());
     }
 
-    apply_port_mappings(&pm_api, &pod_ns, &pod_name, pod_uid, "Pod", "v1", &pod_ip, &desired, &owned).await
+    let lan_ip = &ctx.proxy_manager.lan_ip;
+
+    let desired_names: Vec<String> = desired
+        .iter()
+        .map(|(ext, _int, proto)| pm_name_for_owner(&pod_ns, &pod_name, *ext, proto))
+        .collect();
+
+    for (i, (external_port, internal_port, protocol)) in desired.iter().enumerate() {
+        let name = &desired_names[i];
+        let target = format!("{}:{}", pod_ip, internal_port);
+
+        let proxy_port = match ctx.proxy_manager.ensure_proxy(name, &target).await {
+            Ok(port) => port,
+            Err(e) => {
+                warn!("Failed to start proxy for {}: {}", name, e);
+                continue;
+            }
+        };
+
+        let pm_manifest = json!({
+            "apiVersion": "upnp-controller.io/v1alpha1",
+            "kind": "PortMapping",
+            "metadata": {
+                "name": name,
+                "namespace": pod_ns,
+                "labels": {
+                    MANAGED_BY_LABEL: MANAGED_BY_VALUE
+                },
+                "ownerReferences": [{
+                    "apiVersion": "v1",
+                    "kind": "Pod",
+                    "name": pod_name,
+                    "uid": pod_uid,
+                    "controller": true,
+                    "blockOwnerDeletion": true
+                }]
+            },
+            "spec": {
+                "externalPort": external_port,
+                "internalHost": lan_ip,
+                "internalPort": proxy_port,
+                "protocol": protocol.to_string(),
+                "description": format!("auto:{}/{} proxy->{}:{}", pod_ns, pod_name, pod_ip, internal_port)
+            }
+        });
+
+        pm_api
+            .patch(
+                name,
+                &PatchParams::apply("upnp-service-controller").force(),
+                &Patch::Apply(&pm_manifest),
+            )
+            .await?;
+
+        info!(
+            "Managed PortMapping {}: ext:{} -> {}:{} (proxy) -> {}:{}",
+            name, external_port, lan_ip, proxy_port, pod_ip, internal_port
+        );
+    }
+
+    for pm in &owned {
+        let name = pm.name_any();
+        if !desired_names.contains(&name) {
+            ctx.proxy_manager.stop_proxy(&name).await;
+            if let Err(e) = pm_api.delete(&name, &DeleteParams::default()).await {
+                warn!("Failed to delete stale PortMapping {}: {}", name, e);
+            }
+        }
+    }
+
+    Ok(Action::requeue(Duration::from_secs(60)))
 }
 
 fn pod_error_policy(

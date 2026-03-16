@@ -1,41 +1,94 @@
 # upnp-controller
 
-A Kubernetes controller that manages UPnP port mappings on your home router via Custom Resource Definitions (CRDs). It replaces annotation-based tools like [holepunch](https://github.com/city-dream/holepunch) with a declarative, CRD-driven approach that gives you `kubectl get portmappings` visibility into your NAT rules.
+A Kubernetes controller that automatically exposes cluster services to the internet through your home router's UPnP port mapping. Annotate a Service, and the controller programs your router — no manual port forwarding needed. Lightweight: ~3 MiB RAM, single binary.
 
-## Features
+```mermaid
+graph LR
+    Internet((Internet))
+    Router[Router<br/>UPnP IGD]
+    Controller[upnp-controller<br/>TCP proxy + UPnP]
+    Traefik[Traefik<br/>ClusterIP]
+    Pod1[Pod]
+    Pod2[Pod]
 
-- **Declarative port mappings** -- create a `PortMapping` CR and the controller configures your router automatically
-- **Automatic lease renewal** -- mappings are renewed before expiry so they never silently drop
-- **WAN IP tracking** -- a cluster-scoped `GatewayStatus` singleton tracks your external IP in real time
-- **GENA eventing** -- subscribes to UPnP GENA notifications for instant WAN IP change detection, with polling fallback
-- **External DNS integration** -- optionally annotates Kubernetes nodes with `external-dns.alpha.kubernetes.io/target` so external-dns can publish your WAN IP
-- **Prometheus metrics** -- active mappings, renewal counts, failure counts, WAN IP changes, and GENA subscription health
-- **Finalizer-based cleanup** -- deleting a `PortMapping` CR removes the mapping from the router before the resource is garbage collected
-- **Lightweight** -- single binary, ~32 MiB RAM, runs with `hostNetwork: true`
+    Internet -->|:80/:443| Router
+    Router -->|port mapping| Controller
+    Controller -->|proxy| Traefik
+    Traefik --> Pod1
+    Traefik --> Pod2
+```
+
+## How it works
+
+The controller runs with `hostNetwork: true` on a cluster node that has LAN access to your router. It discovers the router via SSDP multicast, then:
+
+1. **Annotation-driven**: annotate any Service with `upnp-controller.io/port-forward: "80,443"` and the controller starts a local TCP proxy, programs the router via UPnP, and traffic flows from the internet to your pods
+2. **CRD-driven**: create `PortMapping` CRDs directly for non-Kubernetes hosts (NAS, game server, etc.)
+3. **Self-healing**: mappings are automatically renewed before lease expiry, and the controller re-programs the router on restart
+
+The controller proxies through itself so that the UPnP request source IP matches the mapping target — this satisfies routers that restrict UPnP mappings to the requesting device.
 
 ## Quick start
 
-### Prerequisites
-
-- Kubernetes 1.25+
-- A UPnP-enabled router on the same L2 network as at least one node
-- `hostNetwork` access (the pod must reach the router directly)
-
-### Installation
+### Install with Helm
 
 ```bash
-# Deploy CRDs, RBAC, and the controller
-kubectl apply -k config/default
+helm install upnp-controller oci://ghcr.io/jeffmoss/upnp-controller/chart \
+  -n upnp-controller --create-namespace
 ```
 
-### Create a PortMapping
+Or from source:
+
+```bash
+helm install upnp-controller chart/upnp-controller \
+  -n upnp-controller --create-namespace
+```
+
+### Expose a Service
+
+Annotate any Service to forward ports through the router:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: traefik
+  annotations:
+    upnp-controller.io/port-forward: "80,443"
+spec:
+  type: ClusterIP
+  # ...
+```
+
+The controller creates PortMapping CRDs automatically:
+
+```
+$ kubectl get portmappings -A
+NAMESPACE     NAME                          EXTERNAL PORT   INTERNAL HOST   PROTOCOL   ACTIVE   EXTERNAL IP
+kube-system   kube-system-traefik-80-tcp    80              192.168.0.123   TCP        true     75.169.255.229
+kube-system   kube-system-traefik-443-tcp   443             192.168.0.123   TCP        true     75.169.255.229
+```
+
+### Annotation format
+
+```yaml
+# Map all service ports (external = service port)
+upnp-controller.io/port-forward: "true"
+
+# Map specific ports only
+upnp-controller.io/port-forward: "443,80"
+
+# Remap: externalPort:servicePort
+upnp-controller.io/port-forward: "8080:80,8443:443"
+```
+
+### Manual PortMapping (non-Kubernetes hosts)
 
 ```yaml
 apiVersion: upnp-controller.io/v1alpha1
 kind: PortMapping
 metadata:
   name: minecraft
-  namespace: default
 spec:
   externalPort: 25565
   internalHost: "192.168.0.50"
@@ -44,106 +97,82 @@ spec:
   description: "Minecraft server"
 ```
 
-```bash
-kubectl apply -f mapping.yaml
-kubectl get portmappings
-```
+## Configuration
+
+All configuration is via Helm values or environment variables:
+
+| Helm value | Env var | Default | Description |
+|------------|---------|---------|-------------|
+| `logLevel` | `LOG_LEVEL` | `warn` | Log level (`info`, `debug`, etc.) |
+| `gatewayUrl` | `GATEWAY_URL` | (auto-discovered) | Router rootDesc.xml URL. If unset, SSDP discovers it automatically |
+| `gena.enabled` | `GENA_ENABLED` | `true` | Subscribe to UPnP GENA events for instant WAN IP change detection |
+| `polling.interval` | `POLL_INTERVAL_SECS` | `600` | Backup polling interval when GENA is active |
+| `polling.fastInterval` | `POLL_INTERVAL_FAST_SECS` | `10` | Polling interval when GENA is unavailable |
+
+## GatewayStatus
+
+A cluster-scoped singleton `GatewayStatus/default` is created automatically, tracking your router's state:
 
 ```
-NAME        EXTERNAL PORT   INTERNAL HOST   PROTOCOL   ACTIVE   EXTERNAL IP
-minecraft   25565           192.168.0.50    TCP        true     75.169.255.229
+$ kubectl get gatewaystatus
+NAME      EXTERNAL IP      READY   LAST SEEN
+default   75.169.255.229   true    2026-03-16T08:21:56Z
 ```
+
+Fields: `externalIP`, `gatewayURL`, `lanIP`, `subscriptionID`, `lastSeen`, `ready`.
 
 ## CRD reference
 
-Full CRD documentation with field descriptions and examples is in [docs/crds.md](docs/crds.md).
-
-### PortMapping (namespaced)
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `spec.externalPort` | integer (1-65535) | yes | Port on the router's WAN interface |
-| `spec.internalHost` | string | yes | LAN IP address to forward traffic to |
-| `spec.internalPort` | integer (1-65535) | yes | Port on the internal host |
-| `spec.protocol` | `TCP` or `UDP` | yes | Transport protocol |
-| `spec.description` | string | no | Human-readable label stored on the router |
-
-### GatewayStatus (cluster-scoped singleton)
-
-A single `GatewayStatus/default` resource is created automatically. It exposes:
-
-| Status field | Description |
-|--------------|-------------|
-| `externalIP` | Current WAN IP address |
-| `gatewayURL` | The router's rootDesc.xml URL |
-| `subscriptionID` | Active GENA subscription SID |
-| `subscriptionExpiry` | When the GENA subscription expires |
-| `lastSeen` | Last successful contact with the router |
-| `ready` | `true` when an external IP is known |
-
-## Configuration
-
-All configuration is via environment variables:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `GATEWAY_URL` | `http://192.168.0.1:5000/rootDesc.xml` | URL to the router's UPnP root description XML |
-| `NOTIFY_PORT` | `9091` | Port the GENA NOTIFY HTTP server listens on |
-| `METRICS_PORT` | `9090` | Port the Prometheus metrics endpoint listens on |
-| `ANNOTATE_NODES` | `true` | Set `external-dns.alpha.kubernetes.io/target` on the node |
-| `POLL_INTERVAL_SECS` | `300` | Fallback polling interval for `GetExternalIPAddress` (seconds) |
-| `LOG_LEVEL` | `warn` | Tracing filter (e.g. `info`, `debug`, `upnp_controller=debug`) |
-| `LEADER_ELECTION_NAMESPACE` | `upnp-controller` | Namespace for the leader election Lease object |
-| `POD_IP` | -- | Pod IP used to build the GENA callback URL (usually from `status.podIP` downward API) |
-| `NODE_NAME` | -- | Node name for annotation (usually from `spec.nodeName` downward API) |
-
-## Prometheus metrics
-
-| Metric | Type | Labels | Description |
-|--------|------|--------|-------------|
-| `upnp_active_port_mappings` | Gauge | -- | Number of currently active PortMappings |
-| `upnp_port_mapping_renewals_total` | Counter | `name` | Successful port mapping add/renewals |
-| `upnp_port_mapping_failures_total` | Counter | `name`, `reason` | Failed port mapping attempts |
-| `upnp_wan_ip_changes_total` | Counter | -- | Detected WAN IP address changes |
-| `upnp_gena_subscription_active` | Gauge | -- | 1 if GENA subscription is live, 0 if polling fallback |
-| `upnp_gateway_last_seen_seconds` | Gauge | -- | Unix timestamp of last successful router contact |
-
-Metrics are served at `http://<pod>:9090/metrics` in Prometheus text exposition format.
+See [docs/crds.md](docs/crds.md) for full field descriptions and examples.
 
 ## Architecture
 
-The controller runs as a single-replica `Deployment` with `hostNetwork: true`. It discovers the router's UPnP services by fetching `rootDesc.xml`, then subscribes to GENA events for real-time WAN IP change notification. Two kube-rs reconcile loops manage `PortMapping` and `GatewayStatus` resources independently.
-
-For detailed architecture documentation and Mermaid diagrams, see [docs/architecture.md](docs/architecture.md).
+See [docs/architecture.md](docs/architecture.md) for component diagrams, startup sequence, and data flows.
 
 ## Development
 
-### Build
+### Prerequisites
+
+- Rust (stable)
+- Docker
+- KVM/libvirt (for e2e tests)
+- A UPnP-enabled router on the LAN
+
+### Build and test
 
 ```bash
-cargo build
-cargo build --release
+cargo build          # build
+cargo test           # unit tests
+cargo clippy         # lint
 ```
 
-### Test
+### k3s test cluster
+
+The `k3s/` directory contains scripts to create a 3-node k3s cluster on your LAN using KVM + macvtap. Each node gets a real LAN IP from your router's DHCP.
 
 ```bash
-cargo test
+just cluster-up      # create 3-node k3s cluster
+just build-image     # build and import image to all nodes
+just deploy          # install via kustomize
+just e2e             # run e2e tests
+just cluster-down    # tear down
+just e2e-full        # one-command: cluster-up → build → deploy → test
 ```
 
-### Run locally
+The cluster uses two networks per VM:
+- **enp1s0** (macvtap): LAN-routable IP via DHCP — used by Kubernetes
+- **enp2s0** (host-only): management network for SSH from the host
 
-Requires a kubeconfig pointing at a cluster with the CRDs installed:
+### E2E tests
+
+E2E tests run against the real k3s cluster and real router. They verify SSDP discovery, LAN IP detection, controller deployment, and the full PortMapping lifecycle including UPnP programming.
 
 ```bash
-# Install CRDs
-kubectl apply -k config/crd
+# With a running cluster:
+KUBECONFIG=k3s/kubeconfig cargo test --features e2e
 
-# Run the controller
-GATEWAY_URL="http://192.168.0.1:5000/rootDesc.xml" \
-LOG_LEVEL=debug \
-POD_IP=192.168.0.10 \
-cargo run
+# Or the full cycle:
+just e2e-full
 ```
 
 ### Container image
@@ -152,10 +181,11 @@ cargo run
 docker build -t upnp-controller:latest .
 ```
 
-## Deployment
+### Releases
 
-See [docs/deployment.md](docs/deployment.md) for complete deployment instructions, including kustomize quick deploy, manual step-by-step setup, minikube development, and troubleshooting.
+Tagged releases are built automatically via GitHub Actions and pushed to `ghcr.io/jeffmoss/upnp-controller`. CI runs `cargo test` and `cargo clippy` on every push.
 
-## License
-
-See [LICENSE](LICENSE) for details.
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+```

@@ -20,6 +20,7 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 use config::{Config, detect_lan_ip, parse_host};
+use upnp_controller::proxy::ProxyManager;
 use metrics::Metrics;
 use upnp::{
     discovery::{discover_gateway, ssdp_discover},
@@ -184,10 +185,14 @@ async fn main() -> Result<()> {
     }
 
     // Start controllers
+    let lan_ip = cfg.lan_ip.clone().unwrap_or_else(|| "127.0.0.1".to_string());
+    let proxy_manager = ProxyManager::new(lan_ip);
+
     let pm_ctx = Arc::new(controllers::port_mapping_ctrl::PortMappingContext {
         client: client.clone(),
         upnp: upnp_client.clone(),
         metrics: metrics.clone(),
+        proxy_manager,
     });
 
     let cfg_arc = Arc::new(cfg.clone());
