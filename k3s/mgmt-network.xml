@@ -1,0 +1,9 @@
+<network>
+  <name>k3s-mgmt</name>
+  <bridge name="virbr-k3s"/>
+  <ip address="10.44.0.1" netmask="255.255.255.0">
+    <dhcp>
+      <range start="10.44.0.10" end="10.44.0.50"/>
+    </dhcp>
+  </ip>
+</network>

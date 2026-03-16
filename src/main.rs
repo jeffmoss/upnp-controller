@@ -196,7 +196,6 @@ async fn main() -> Result<()> {
         eventing_state: eventing_state.clone(),
         metrics: metrics.clone(),
         config: cfg_arc,
-        node_name: cfg.node_name.clone(),
         gateway_url: root_desc_url.clone(),
         subscription_id: subscription_id.clone(),
     });

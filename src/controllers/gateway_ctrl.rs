@@ -3,7 +3,6 @@ use std::time::Duration;
 
 use chrono::Utc;
 use futures::StreamExt;
-use k8s_openapi::api::core::v1::Node;
 use kube::{
     api::{Api, ObjectMeta, Patch, PatchParams},
     runtime::{
@@ -25,7 +24,6 @@ pub struct GatewayContext {
     pub eventing_state: Arc<EventingState>,
     pub metrics: Arc<Metrics>,
     pub config: Arc<AppConfig>,
-    pub node_name: Option<String>,
     pub gateway_url: String,
     pub subscription_id: Arc<tokio::sync::RwLock<Option<String>>>,
 }
@@ -119,39 +117,9 @@ pub async fn reconcile(gs: Arc<GatewayStatus>, ctx: Arc<GatewayContext>) -> Resu
         }
     }
 
-    // Annotate node if configured
-    if ctx.config.annotate_nodes {
-        if let (Some(ip), Some(node_name)) = (&external_ip, &ctx.node_name) {
-            if let Err(e) = annotate_node(&ctx.client, node_name, ip).await {
-                warn!("Failed to annotate node {}: {}", node_name, e);
-            }
-        }
-    }
-
     ctx.metrics.gateway_last_seen.set(now.timestamp() as f64);
 
     Ok(Action::requeue(Duration::from_secs(60)))
-}
-
-pub async fn annotate_node(client: &Client, node_name: &str, external_ip: &str) -> anyhow::Result<()> {
-    let nodes: Api<Node> = Api::all(client.clone());
-    let patch = json!({
-        "metadata": {
-            "annotations": {
-                "external-dns.alpha.kubernetes.io/target": external_ip
-            }
-        }
-    });
-    nodes
-        .patch(
-            node_name,
-            &PatchParams::apply("upnp-controller"),
-            &Patch::Merge(&patch),
-        )
-        .await
-        .map_err(|e| anyhow::anyhow!("Node patch failed: {}", e))?;
-    debug!("Annotated node {} with external IP {}", node_name, external_ip);
-    Ok(())
 }
 
 fn error_policy(

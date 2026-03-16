@@ -1,1 +1,7 @@
 /target
+/k3s/*.img
+/k3s/*.qcow2
+/k3s/*.iso
+/k3s/*-rendered.yaml
+/k3s/*-network-config.yaml
+/k3s/kubeconfig

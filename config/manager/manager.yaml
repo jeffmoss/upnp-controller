@@ -29,20 +29,12 @@ spec:
           image: upnp-controller:latest
           imagePullPolicy: IfNotPresent
           env:
-            - name: GATEWAY_URL
-              value: "http://192.168.0.1:5000/rootDesc.xml"
-            - name: ANNOTATE_NODES
-              value: "true"
             - name: LOG_LEVEL
               value: "warn"
             - name: POD_IP
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
-            - name: NODE_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: spec.nodeName
           ports:
             - name: metrics
               containerPort: 9090

@@ -11,8 +11,6 @@ pub struct Config {
     pub notify_port: u16,
     /// Port for Prometheus metrics
     pub metrics_port: u16,
-    /// Whether to annotate nodes with WAN IP for external-dns
-    pub annotate_nodes: bool,
     /// Polling interval when GENA is active (backup)
     pub poll_interval_secs: u64,
     /// Polling interval when GENA is unavailable
@@ -28,8 +26,6 @@ pub struct Config {
     pub pod_ip: Option<String>,
     /// Detected LAN IP (same subnet as gateway)
     pub lan_ip: Option<String>,
-    /// This node's name (for annotation)
-    pub node_name: Option<String>,
 }
 
 impl Config {
@@ -44,9 +40,6 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(9090),
-            annotate_nodes: env::var("ANNOTATE_NODES")
-                .map(|v| v != "false" && v != "0")
-                .unwrap_or(true),
             poll_interval_secs: env::var("POLL_INTERVAL_SECS")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -63,7 +56,6 @@ impl Config {
                 .unwrap_or_else(|_| "upnp-controller".to_string()),
             pod_ip: env::var("POD_IP").ok(),
             lan_ip: None,
-            node_name: env::var("NODE_NAME").ok(),
         }
     }
 
@@ -100,7 +92,6 @@ mod tests {
             gateway_url: None,
             notify_port: 9091,
             metrics_port: 9090,
-            annotate_nodes: true,
             poll_interval_secs: 600,
             poll_interval_fast_secs: 10,
             gena_enabled: true,
@@ -108,7 +99,6 @@ mod tests {
             leader_election_namespace: "upnp-controller".to_string(),
             pod_ip: Some("10.0.0.1".to_string()),
             lan_ip: None,
-            node_name: None,
         }
     }
 
@@ -148,9 +138,4 @@ mod tests {
         assert_eq!(parse_host("not-a-url"), None);
     }
 
-    #[test]
-    fn test_annotate_nodes_default() {
-        let cfg = Config::from_env();
-        assert!(cfg.annotate_nodes || !cfg.annotate_nodes); // just ensure it parses
-    }
 }

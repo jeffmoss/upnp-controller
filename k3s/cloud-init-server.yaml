@@ -1,0 +1,14 @@
+#cloud-config
+hostname: k3s-server
+users:
+  - name: k3s
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    lock_passwd: false
+    plain_text_passwd: k3s
+    ssh_authorized_keys:
+      - ${SSH_PUB_KEY}
+runcmd:
+  - |
+    MGMT_IP=$(ip -4 addr show enp2s0 | grep -oP '\d+\.\d+\.\d+\.\d+' | head -1)
+    curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="server --write-kubeconfig-mode 644 --tls-san $MGMT_IP" sh -

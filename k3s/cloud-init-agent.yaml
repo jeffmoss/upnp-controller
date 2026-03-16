@@ -1,0 +1,14 @@
+#cloud-config
+hostname: ${HOSTNAME}
+users:
+  - name: k3s
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    lock_passwd: false
+    plain_text_passwd: k3s
+    ssh_authorized_keys:
+      - ${SSH_PUB_KEY}
+runcmd:
+  - |
+    until curl -sfk https://${SERVER_IP}:6443/ping; do sleep 2; done
+    curl -sfL https://get.k3s.io | K3S_URL=https://${SERVER_IP}:6443 K3S_TOKEN=${K3S_TOKEN} sh -
