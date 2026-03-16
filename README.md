@@ -6,16 +6,35 @@ A Kubernetes controller that automatically exposes cluster services to the inter
 graph LR
     Internet((Internet))
     Router[Router<br/>UPnP IGD]
-    Controller[upnp-controller<br/>TCP proxy + UPnP]
-    Traefik[Traefik<br/>ClusterIP]
+    Controller[upnp-controller<br/>TCP proxy]
+    Service[Service<br/>ClusterIP]
     Pod1[Pod]
     Pod2[Pod]
 
     Internet -->|:80/:443| Router
-    Router -->|port mapping| Controller
-    Controller -->|proxy| Traefik
-    Traefik --> Pod1
-    Traefik --> Pod2
+    Router -->|UPnP port mapping| Controller
+    Controller -->|proxy| Service
+    Service --> Pod1
+    Service --> Pod2
+```
+
+With external-dns for dynamic DNS:
+
+```mermaid
+graph LR
+    Internet((Internet))
+    DNS[DNS Provider<br/>Route53 / Cloudflare]
+    Router[Router]
+    Controller[upnp-controller]
+    ExtDNS[external-dns]
+    DNSEp[DNSEndpoint CR]
+
+    Controller -->|programs router| Router
+    Controller -->|sets WAN IP| DNSEp
+    ExtDNS -->|reads| DNSEp
+    ExtDNS -->|updates A record| DNS
+    Internet -->|resolves home.example.com| DNS
+    Internet -->|traffic| Router
 ```
 
 ## How it works

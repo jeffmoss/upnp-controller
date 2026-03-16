@@ -19,6 +19,7 @@ mod tests {
     use kube::Client;
 
     use upnp_controller::config::{detect_lan_ip, parse_host};
+    use upnp_controller::controllers::dns_endpoint_ctrl::DNSEndpoint;
     use upnp_controller::crds::gateway_status::GatewayStatus;
     use upnp_controller::crds::port_mapping::PortMapping;
     use upnp_controller::upnp::discovery::ssdp_discover;
@@ -401,5 +402,105 @@ mod tests {
         let _ = svc_api.delete("e2e-ann-svc", &DeleteParams::default()).await;
         let _ = deploy_api.delete("e2e-ann-hello", &DeleteParams::default()).await;
         eprintln!("Annotation port-forward test passed");
+    }
+
+    // --- DNSEndpoint lifecycle test ---
+
+    /// Test that DNSEndpoint A record targets are updated with the WAN IP.
+    /// Creates the DNSEndpoint CRD if needed, then tests:
+    /// 1. Unmanaged DNSEndpoint is ignored
+    /// 2. Adding annotation triggers target update
+    /// 3. Removing annotation stops management
+    #[tokio::test]
+    async fn test_dns_endpoint_lifecycle() {
+        let client = Client::try_default().await.expect("kubeconfig required");
+        let crd_api: Api<CustomResourceDefinition> = Api::all(client.clone());
+        let dns_api: Api<DNSEndpoint> = Api::namespaced(client.clone(), "default");
+
+        let external_ip = get_external_ip().await;
+
+        // Ensure DNSEndpoint CRD exists
+        if crd_api.get("dnsendpoints.externaldns.k8s.io").await.is_err() {
+            crd_api.patch(
+                "dnsendpoints.externaldns.k8s.io",
+                &PatchParams::apply("e2e-test").force(),
+                &Patch::Apply(serde_json::json!({
+                    "apiVersion": "apiextensions.k8s.io/v1",
+                    "kind": "CustomResourceDefinition",
+                    "metadata": {
+                        "name": "dnsendpoints.externaldns.k8s.io",
+                        "annotations": {
+                            "api-approved.kubernetes.io": "https://github.com/kubernetes-sigs/external-dns"
+                        }
+                    },
+                    "spec": {
+                        "group": "externaldns.k8s.io",
+                        "names": { "kind": "DNSEndpoint", "plural": "dnsendpoints", "singular": "dnsendpoint" },
+                        "scope": "Namespaced",
+                        "versions": [{
+                            "name": "v1alpha1", "served": true, "storage": true,
+                            "schema": { "openAPIV3Schema": { "type": "object", "properties": {
+                                "spec": { "type": "object", "properties": {
+                                    "endpoints": { "type": "array", "items": { "type": "object", "properties": {
+                                        "dnsName": { "type": "string" },
+                                        "recordType": { "type": "string" },
+                                        "recordTTL": { "type": "integer" },
+                                        "targets": { "type": "array", "items": { "type": "string" } }
+                                    } } }
+                                } }
+                            } } }
+                        }]
+                    }
+                })),
+            ).await.expect("failed to create DNSEndpoint CRD");
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+
+        // Cleanup
+        let _ = dns_api.delete("e2e-dns-test", &DeleteParams::default()).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        // Create WITHOUT annotation — should be ignored
+        dns_api.create(&Default::default(), &serde_json::from_value(serde_json::json!({
+            "apiVersion": "externaldns.k8s.io/v1alpha1",
+            "kind": "DNSEndpoint",
+            "metadata": { "name": "e2e-dns-test" },
+            "spec": { "endpoints": [{ "dnsName": "test.example.com", "recordType": "A", "recordTTL": 60, "targets": ["1.2.3.4"] }] }
+        })).unwrap()).await.expect("failed to create DNSEndpoint");
+        tokio::time::sleep(Duration::from_secs(3)).await;
+
+        let ep = dns_api.get("e2e-dns-test").await.expect("DNSEndpoint not found");
+        assert_eq!(ep.spec.endpoints[0].targets, vec!["1.2.3.4"], "Unmanaged DNSEndpoint should not be modified");
+        eprintln!("Unmanaged DNSEndpoint correctly ignored");
+
+        // Add annotation — should update targets
+        dns_api.patch("e2e-dns-test", &PatchParams::default(), &Patch::Merge(serde_json::json!({
+            "metadata": { "annotations": { "upnp-controller.io/managed": "true" } }
+        }))).await.expect("failed to annotate");
+        tokio::time::sleep(Duration::from_secs(5)).await;
+
+        let ep = dns_api.get("e2e-dns-test").await.expect("DNSEndpoint not found");
+        assert_eq!(ep.spec.endpoints[0].targets, vec![external_ip.clone()], "Managed DNSEndpoint should have WAN IP");
+        eprintln!("Annotation added: targets updated to {}", external_ip);
+
+        // Remove annotation — should stop managing
+        dns_api.patch("e2e-dns-test", &PatchParams::default(), &Patch::Merge(serde_json::json!({
+            "metadata": { "annotations": { "upnp-controller.io/managed": null } }
+        }))).await.expect("failed to remove annotation");
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        // Set wrong IP — should NOT be corrected
+        dns_api.patch("e2e-dns-test", &PatchParams::default(), &Patch::Merge(serde_json::json!({
+            "spec": { "endpoints": [{ "dnsName": "test.example.com", "recordType": "A", "recordTTL": 60, "targets": ["9.9.9.9"] }] }
+        }))).await.expect("failed to patch targets");
+        tokio::time::sleep(Duration::from_secs(3)).await;
+
+        let ep = dns_api.get("e2e-dns-test").await.expect("DNSEndpoint not found");
+        assert_eq!(ep.spec.endpoints[0].targets, vec!["9.9.9.9"], "Unmanaged DNSEndpoint should keep wrong IP");
+        eprintln!("Annotation removed: targets not corrected (9.9.9.9 stays)");
+
+        // Cleanup
+        let _ = dns_api.delete("e2e-dns-test", &DeleteParams::default()).await;
+        eprintln!("DNSEndpoint lifecycle test passed");
     }
 }

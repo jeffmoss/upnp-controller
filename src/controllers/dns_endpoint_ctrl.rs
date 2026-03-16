@@ -111,17 +111,9 @@ pub async fn update_all_managed(client: &Client, wan_ip: &str) {
     };
 
     for ep in endpoints {
-        let managed = ep
-            .metadata
-            .annotations
-            .as_ref()
-            .and_then(|a| a.get(MANAGED_ANNOTATION))
-            .map(|v| v == "true")
-            .unwrap_or(false);
-        if !managed {
+        if !is_managed(&ep) {
             continue;
         }
-
         patch_targets(&ep, client, wan_ip).await;
     }
 }
@@ -130,13 +122,7 @@ async fn patch_targets(ep: &DNSEndpoint, client: &Client, wan_ip: &str) {
     let name = ep.name_any();
     let ns = ep.namespace().unwrap_or_else(|| "default".to_string());
 
-    let mut patched_spec = ep.spec.clone();
-    for endpoint in &mut patched_spec.endpoints {
-        if endpoint.record_type == "A" {
-            endpoint.targets = vec![wan_ip.to_string()];
-        }
-    }
-
+    let patched_spec = build_patched_spec(&ep.spec, wan_ip);
     let api: Api<DNSEndpoint> = Api::namespaced(client.clone(), &ns);
     let patch = Patch::Merge(json!({
         "spec": serde_json::to_value(&patched_spec).unwrap_or_default()
@@ -151,15 +137,7 @@ async fn reconcile(
     ep: Arc<DNSEndpoint>,
     ctx: Arc<DnsEndpointContext>,
 ) -> Result<Action, kube::Error> {
-    let managed = ep
-        .metadata
-        .annotations
-        .as_ref()
-        .and_then(|a| a.get(MANAGED_ANNOTATION))
-        .map(|v| v == "true")
-        .unwrap_or(false);
-
-    if !managed {
+    if !is_managed(&ep) {
         return Ok(Action::await_change());
     }
 
@@ -172,11 +150,7 @@ async fn reconcile(
         }
     };
 
-    // Skip if all A record targets already match
-    let correct = ep.spec.endpoints.iter().all(|e| {
-        e.record_type != "A" || e.targets == vec![wan_ip.clone()]
-    });
-    if !correct {
+    if !targets_correct(&ep.spec, &wan_ip) {
         patch_targets(&ep, &ctx.client, &wan_ip).await;
     }
     Ok(Action::requeue(Duration::from_secs(300)))
@@ -189,4 +163,143 @@ fn error_policy(
 ) -> Action {
     error!("DNSEndpoint controller error: {}", error);
     Action::requeue(Duration::from_secs(30))
+}
+
+/// Check if a DNSEndpoint has the managed annotation.
+fn is_managed(ep: &DNSEndpoint) -> bool {
+    ep.metadata
+        .annotations
+        .as_ref()
+        .and_then(|a| a.get(MANAGED_ANNOTATION))
+        .map(|v| v == "true")
+        .unwrap_or(false)
+}
+
+/// Check if all A record targets already match the given IP.
+fn targets_correct(spec: &DNSEndpointSpec, wan_ip: &str) -> bool {
+    spec.endpoints.iter().all(|e| {
+        e.record_type != "A" || e.targets == vec![wan_ip.to_string()]
+    })
+}
+
+/// Build a patched spec with A record targets set to the given IP.
+fn build_patched_spec(spec: &DNSEndpointSpec, wan_ip: &str) -> DNSEndpointSpec {
+    let mut patched = spec.clone();
+    for endpoint in &mut patched.endpoints {
+        if endpoint.record_type == "A" {
+            endpoint.targets = vec![wan_ip.to_string()];
+        }
+    }
+    patched
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kube::api::ObjectMeta;
+    use std::collections::BTreeMap;
+
+    fn make_endpoint(dns_name: &str, record_type: &str, targets: Vec<&str>) -> Endpoint {
+        Endpoint {
+            dns_name: dns_name.to_string(),
+            record_type: record_type.to_string(),
+            record_ttl: Some(60),
+            targets: targets.into_iter().map(String::from).collect(),
+        }
+    }
+
+    fn make_dns_endpoint(annotations: Option<BTreeMap<String, String>>, endpoints: Vec<Endpoint>) -> DNSEndpoint {
+        DNSEndpoint {
+            metadata: ObjectMeta {
+                name: Some("test".to_string()),
+                namespace: Some("default".to_string()),
+                annotations,
+                ..Default::default()
+            },
+            spec: DNSEndpointSpec { endpoints },
+        }
+    }
+
+    #[test]
+    fn test_is_managed_with_annotation() {
+        let mut annotations = BTreeMap::new();
+        annotations.insert(MANAGED_ANNOTATION.to_string(), "true".to_string());
+        let ep = make_dns_endpoint(Some(annotations), vec![]);
+        assert!(is_managed(&ep));
+    }
+
+    #[test]
+    fn test_is_managed_without_annotation() {
+        let ep = make_dns_endpoint(None, vec![]);
+        assert!(!is_managed(&ep));
+    }
+
+    #[test]
+    fn test_is_managed_wrong_value() {
+        let mut annotations = BTreeMap::new();
+        annotations.insert(MANAGED_ANNOTATION.to_string(), "false".to_string());
+        let ep = make_dns_endpoint(Some(annotations), vec![]);
+        assert!(!is_managed(&ep));
+    }
+
+    #[test]
+    fn test_targets_correct_when_matching() {
+        let spec = DNSEndpointSpec {
+            endpoints: vec![make_endpoint("home.example.com", "A", vec!["1.2.3.4"])],
+        };
+        assert!(targets_correct(&spec, "1.2.3.4"));
+    }
+
+    #[test]
+    fn test_targets_incorrect_when_different() {
+        let spec = DNSEndpointSpec {
+            endpoints: vec![make_endpoint("home.example.com", "A", vec!["1.2.3.4"])],
+        };
+        assert!(!targets_correct(&spec, "5.6.7.8"));
+    }
+
+    #[test]
+    fn test_targets_correct_ignores_non_a_records() {
+        let spec = DNSEndpointSpec {
+            endpoints: vec![
+                make_endpoint("home.example.com", "A", vec!["1.2.3.4"]),
+                make_endpoint("home.example.com", "CNAME", vec!["other.example.com"]),
+            ],
+        };
+        assert!(targets_correct(&spec, "1.2.3.4"));
+    }
+
+    #[test]
+    fn test_targets_correct_empty_targets() {
+        let spec = DNSEndpointSpec {
+            endpoints: vec![make_endpoint("home.example.com", "A", vec![])],
+        };
+        assert!(!targets_correct(&spec, "1.2.3.4"));
+    }
+
+    #[test]
+    fn test_build_patched_spec_updates_a_records_only() {
+        let spec = DNSEndpointSpec {
+            endpoints: vec![
+                make_endpoint("home.example.com", "A", vec!["1.2.3.4"]),
+                make_endpoint("home.example.com", "CNAME", vec!["other.example.com"]),
+            ],
+        };
+        let patched = build_patched_spec(&spec, "5.6.7.8");
+        assert_eq!(patched.endpoints[0].targets, vec!["5.6.7.8"]);
+        assert_eq!(patched.endpoints[1].targets, vec!["other.example.com"]);
+    }
+
+    #[test]
+    fn test_build_patched_spec_multiple_a_records() {
+        let spec = DNSEndpointSpec {
+            endpoints: vec![
+                make_endpoint("a.example.com", "A", vec!["1.1.1.1"]),
+                make_endpoint("b.example.com", "A", vec!["2.2.2.2"]),
+            ],
+        };
+        let patched = build_patched_spec(&spec, "9.9.9.9");
+        assert_eq!(patched.endpoints[0].targets, vec!["9.9.9.9"]);
+        assert_eq!(patched.endpoints[1].targets, vec!["9.9.9.9"]);
+    }
 }
