@@ -22,10 +22,22 @@ With external-dns for dynamic DNS:
 
 ```mermaid
 graph LR
-    Router[Router<br/>UPnP IGD] -->|WAN IP| Controller[upnp-controller]
-    Controller -->|patch targets| DNSEp[DNSEndpoint CR]
-    DNSEp -->|reconcile| ExtDNS[external-dns]
-    ExtDNS -->|update A record| DNS[DNS Provider]
+    IPChange((WAN IP<br/>change))
+    Router[Router<br/>UPnP IGD]
+    Controller[upnp-controller]
+    DNSEp1[DNSEndpoint<br/>home.example.com]
+    DNSEp2[DNSEndpoint<br/>vpn.example.com]
+    ExtDNS[external-dns]
+    R53[Route53]
+    CF[Cloudflare]
+
+    IPChange --> Router -->|GENA notify| Controller
+    Controller -->|patch targets| DNSEp1
+    Controller -->|patch targets| DNSEp2
+    DNSEp1 --> ExtDNS
+    DNSEp2 --> ExtDNS
+    ExtDNS -->|update A record| R53
+    ExtDNS -->|update A record| CF
 ```
 
 ## How it works
