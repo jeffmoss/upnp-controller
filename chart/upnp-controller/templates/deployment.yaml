@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: upnp-controller
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: upnp-controller
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: upnp-controller
+  template:
+    metadata:
+      labels:
+        app: upnp-controller
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      serviceAccountName: upnp-controller
+      containers:
+        - name: controller
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: LOG_LEVEL
+              value: {{ .Values.logLevel | quote }}
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            {{- if .Values.gatewayUrl }}
+            - name: GATEWAY_URL
+              value: {{ .Values.gatewayUrl | quote }}
+            {{- end }}
+            - name: GENA_ENABLED
+              value: {{ .Values.gena.enabled | quote }}
+            - name: POLL_INTERVAL_SECS
+              value: {{ .Values.polling.interval | quote }}
+            - name: POLL_INTERVAL_FAST_SECS
+              value: {{ .Values.polling.fastInterval | quote }}
+          ports:
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+            - name: notify
+              containerPort: 9091
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: 9090
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: 9090
+            initialDelaySeconds: 15
+            periodSeconds: 30

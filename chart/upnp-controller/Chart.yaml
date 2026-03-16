@@ -1,0 +1,6 @@
+apiVersion: v2
+name: upnp-controller
+description: Kubernetes controller that programs UPnP port mappings on your router
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

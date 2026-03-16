@@ -1,0 +1,138 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: portmappings.upnp.k8s.io
+spec:
+  group: upnp.k8s.io
+  names:
+    kind: PortMapping
+    listKind: PortMappingList
+    plural: portmappings
+    singular: portmapping
+    shortNames: [pm]
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [externalPort, internalHost, internalPort, protocol]
+              properties:
+                externalPort:
+                  type: integer
+                internalHost:
+                  type: string
+                internalPort:
+                  type: integer
+                protocol:
+                  type: string
+                  enum: [TCP, UDP]
+                description:
+                  type: string
+            status:
+              type: object
+              properties:
+                active:
+                  type: boolean
+                externalIP:
+                  type: string
+                leaseExpiry:
+                  type: string
+                  format: date-time
+                lastRenewal:
+                  type: string
+                  format: date-time
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: External Port
+          type: integer
+          jsonPath: .spec.externalPort
+        - name: Internal Host
+          type: string
+          jsonPath: .spec.internalHost
+        - name: Protocol
+          type: string
+          jsonPath: .spec.protocol
+        - name: Active
+          type: boolean
+          jsonPath: .status.active
+        - name: External IP
+          type: string
+          jsonPath: .status.externalIP
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: gatewaystatuses.upnp.k8s.io
+spec:
+  group: upnp.k8s.io
+  names:
+    kind: GatewayStatus
+    listKind: GatewayStatusList
+    plural: gatewaystatuses
+    singular: gatewaystatus
+  scope: Cluster
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+            status:
+              type: object
+              properties:
+                externalIP:
+                  type: string
+                gatewayURL:
+                  type: string
+                subscriptionID:
+                  type: string
+                subscriptionExpiry:
+                  type: string
+                  format: date-time
+                lastSeen:
+                  type: string
+                  format: date-time
+                lanIP:
+                  type: string
+                ready:
+                  type: boolean
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: External IP
+          type: string
+          jsonPath: .status.externalIP
+        - name: Ready
+          type: boolean
+          jsonPath: .status.ready
+        - name: Last Seen
+          type: date
+          jsonPath: .status.lastSeen
