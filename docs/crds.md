@@ -68,3 +68,34 @@ Read-only resource tracking the controller's connection to the router.
 | `subscriptionExpiry` | date-time | GENA subscription expiry |
 | `lastSeen` | date-time | Last successful router contact |
 | `ready` | boolean | `true` when an external IP is known |
+
+---
+
+## DNSEndpoint (external-dns)
+
+**API group**: `externaldns.k8s.io/v1alpha1` (not owned by this controller)
+
+The controller watches DNSEndpoint resources annotated with `upnp-controller.io/managed: "true"` and patches A record targets with the current WAN IP.
+
+### Annotation
+
+| Key | Value | Description |
+|-----|-------|-------------|
+| `upnp-controller.io/managed` | `"true"` | Enables automatic target patching |
+
+### Example
+
+```yaml
+apiVersion: externaldns.k8s.io/v1alpha1
+kind: DNSEndpoint
+metadata:
+  name: home
+  annotations:
+    upnp-controller.io/managed: "true"
+spec:
+  endpoints:
+  - dnsName: home.example.com
+    recordType: A
+    recordTTL: 60
+    targets: []
+```

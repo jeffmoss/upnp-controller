@@ -47,6 +47,7 @@ graph TB
 | **UPnP Client** | `src/upnp/port_mapping.rs` | SOAP client for UPnP IGD |
 | **SSDP Discovery** | `src/upnp/discovery.rs` | Discovers router via multicast, parses rootDesc.xml |
 | **GENA Eventing** | `src/upnp/eventing.rs` | Subscribes to WAN IP change notifications |
+| **DNSEndpoint Controller** | `src/controllers/dns_endpoint_ctrl.rs` | Patches annotated DNSEndpoints with the WAN IP |
 | **Config** | `src/config.rs` | Environment variable config, LAN IP detection |
 | **Proxy Manager** | `src/proxy.rs` | Manages lifecycle of TCP proxy instances |
 
@@ -78,6 +79,10 @@ stateDiagram-v2
     Active --> Deleting: CR deleted
     Deleting --> [*]: DeletePortMapping + finalizer removed
 ```
+
+## DNSEndpoint integration
+
+The controller watches for `DNSEndpoint` resources (from external-dns) annotated with `upnp-controller.io/managed: "true"`. For each A record endpoint, it patches `targets` with the current WAN IP from GatewayStatus. When the WAN IP changes, the targets are updated automatically.
 
 ## GENA subscription
 

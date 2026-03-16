@@ -97,6 +97,29 @@ spec:
   description: "Minecraft server"
 ```
 
+### Dynamic DNS with external-dns
+
+The controller can keep `DNSEndpoint` resources (from [external-dns](https://github.com/kubernetes-sigs/external-dns)) updated with your WAN IP. Annotate any `DNSEndpoint` with `upnp-controller.io/managed: "true"` and the controller will set the `targets` of all A records to the current public IP from GatewayStatus.
+
+```yaml
+apiVersion: externaldns.k8s.io/v1alpha1
+kind: DNSEndpoint
+metadata:
+  name: home
+  annotations:
+    upnp-controller.io/managed: "true"
+spec:
+  endpoints:
+  - dnsName: home.example.com
+    recordType: A
+    recordTTL: 60
+    targets: []  # controller fills this with the WAN IP
+```
+
+When your WAN IP changes, the controller updates the targets automatically. External-dns then propagates the change to your DNS provider (Route53, Cloudflare, etc.).
+
+The DNSEndpoint CRD must be installed (comes with external-dns). If it's not present, the controller logs a message and skips this feature.
+
 ## Configuration
 
 All configuration is via Helm values or environment variables:

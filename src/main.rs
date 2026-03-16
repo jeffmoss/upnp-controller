@@ -17,7 +17,7 @@ use axum::{
 use chrono::Utc;
 use kube::Client;
 use tokio::sync::RwLock;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use config::{Config, detect_lan_ip, parse_host};
 use upnp_controller::proxy::ProxyManager;
@@ -193,6 +193,7 @@ async fn main() -> Result<()> {
         upnp: upnp_client.clone(),
         metrics: metrics.clone(),
         proxy_manager,
+        shutting_down: std::sync::atomic::AtomicBool::new(false),
     });
 
     let cfg_arc = Arc::new(cfg.clone());
@@ -205,10 +206,16 @@ async fn main() -> Result<()> {
         subscription_id: subscription_id.clone(),
     });
 
+    let dns_ctx = Arc::new(controllers::dns_endpoint_ctrl::DnsEndpointContext {
+        client: client.clone(),
+        eventing_state: eventing_state.clone(),
+    });
+
     tokio::spawn(controllers::port_mapping_ctrl::run(pm_ctx.clone()));
     tokio::spawn(controllers::port_mapping_ctrl::run_service_watcher(pm_ctx.clone()));
-    tokio::spawn(controllers::port_mapping_ctrl::run_pod_watcher(pm_ctx));
+    tokio::spawn(controllers::port_mapping_ctrl::run_pod_watcher(pm_ctx.clone()));
     tokio::spawn(controllers::gateway_ctrl::run(gw_ctx));
+    tokio::spawn(controllers::dns_endpoint_ctrl::run(dns_ctx));
 
     // Start axum server
     let state = AppState {
@@ -233,16 +240,29 @@ async fn main() -> Result<()> {
     info!("Starting NOTIFY server on {}", notify_addr);
     info!("Starting metrics server on {}", metrics_addr);
 
-    tokio::try_join!(
-        axum::serve(
-            tokio::net::TcpListener::bind(&notify_addr).await?,
-            notify_app,
-        ),
-        axum::serve(
-            tokio::net::TcpListener::bind(&metrics_addr).await?,
-            metrics_app,
-        ),
-    )?;
+    // Spawn servers
+    tokio::spawn(async move {
+        let _ = tokio::try_join!(
+            axum::serve(
+                tokio::net::TcpListener::bind(&notify_addr).await.unwrap(),
+                notify_app,
+            ),
+            axum::serve(
+                tokio::net::TcpListener::bind(&metrics_addr).await.unwrap(),
+                metrics_app,
+            ),
+        );
+    });
+
+    // Wait for shutdown signal
+    shutdown_signal().await;
+    info!("Received shutdown signal, cleaning up...");
+
+    // Tell reconcilers to stop creating/patching resources
+    pm_ctx.shutting_down.store(true, std::sync::atomic::Ordering::Relaxed);
+
+    graceful_shutdown(&client, &upnp_client.clone()).await;
+    info!("Shutdown complete");
 
     Ok(())
 }
@@ -268,5 +288,69 @@ async fn handle_metrics(State(state): State<AppState>) -> impl IntoResponse {
     match state.metrics.render() {
         Ok(body) => (StatusCode::OK, body),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = tokio::signal::ctrl_c();
+    #[cfg(unix)]
+    {
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to register SIGTERM handler");
+        tokio::select! {
+            _ = ctrl_c => {}
+            _ = sigterm.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    ctrl_c.await.ok();
+}
+
+/// Delete all PortMapping CRs and wait for finalization to complete.
+/// The reconcile loop is still running, so the finalizer fires normally:
+/// reconcile_cleanup → DeletePortMapping on router → remove finalizer → k8s GC.
+async fn graceful_shutdown(client: &Client, _upnp: &Arc<UpnpClient>) {
+    use kube::api::{Api, DeleteParams, ListParams};
+    use upnp_controller::crds::port_mapping::PortMapping;
+
+    let api: Api<PortMapping> = Api::all(client.clone());
+    let pms = match api.list(&ListParams::default()).await {
+        Ok(list) => list.items,
+        Err(e) => {
+            warn!("Failed to list PortMappings during shutdown: {}", e);
+            return;
+        }
+    };
+
+    info!("Graceful shutdown: deleting {} PortMappings", pms.len());
+    for pm in &pms {
+        let name = pm.metadata.name.as_deref().unwrap_or("?");
+        let ns = pm.metadata.namespace.as_deref().unwrap_or("default");
+        let ns_api: Api<PortMapping> = Api::namespaced(client.clone(), ns);
+        match ns_api.delete(name, &DeleteParams::default()).await {
+            Ok(_) => info!("Shutdown: deleted {}/{}", ns, name),
+            Err(e) => warn!("Shutdown: failed to delete {}/{}: {}", ns, name, e),
+        }
+    }
+
+    // Delete GatewayStatus singleton
+    let gs_api: Api<upnp_controller::crds::gateway_status::GatewayStatus> = Api::all(client.clone());
+    match gs_api.delete("default", &DeleteParams::default()).await {
+        Ok(_) => info!("Shutdown: deleted GatewayStatus/default"),
+        Err(e) => warn!("Shutdown: failed to delete GatewayStatus: {}", e),
+    }
+
+    // Wait for all resources to be fully gone (finalizers processed by reconcile loops)
+    loop {
+        let pm_count = api.list(&ListParams::default()).await
+            .map(|list| list.items.len()).unwrap_or(0);
+        let gs_exists = gs_api.get("default").await.is_ok();
+
+        if pm_count == 0 && !gs_exists {
+            info!("Shutdown: all resources cleaned up");
+            break;
+        }
+        debug!("Shutdown: waiting for {} PortMappings, GatewayStatus={}", pm_count, if gs_exists { "exists" } else { "gone" });
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }

@@ -34,6 +34,8 @@ pub struct PortMappingContext {
     pub upnp: Arc<UpnpClient>,
     pub metrics: Arc<Metrics>,
     pub proxy_manager: ProxyManager,
+    /// Set to true on shutdown — reconcilers skip creating/patching, only allow cleanup
+    pub shutting_down: std::sync::atomic::AtomicBool,
 }
 
 pub async fn run(ctx: Arc<PortMappingContext>) {
@@ -313,6 +315,10 @@ async fn reconcile_service(
     svc: Arc<Service>,
     ctx: Arc<PortMappingContext>,
 ) -> Result<Action, ReconcileError> {
+    if ctx.shutting_down.load(std::sync::atomic::Ordering::Relaxed) {
+        return Ok(Action::await_change());
+    }
+
     let svc_name = svc.name_any();
     let svc_ns = svc.namespace().unwrap_or_else(|| "default".to_string());
     let svc_uid = svc.metadata.uid.as_deref().unwrap_or("");
@@ -450,6 +456,10 @@ async fn reconcile_pod(
     pod: Arc<Pod>,
     ctx: Arc<PortMappingContext>,
 ) -> Result<Action, ReconcileError> {
+    if ctx.shutting_down.load(std::sync::atomic::Ordering::Relaxed) {
+        return Ok(Action::await_change());
+    }
+
     let pod_name = pod.name_any();
     let pod_ns = pod.namespace().unwrap_or_else(|| "default".to_string());
     let pod_uid = pod.metadata.uid.as_deref().unwrap_or("");
