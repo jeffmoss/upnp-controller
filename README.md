@@ -21,19 +21,11 @@ graph LR
 With external-dns for dynamic DNS:
 
 ```mermaid
-graph TD
-    subgraph Cluster
-        Controller[upnp-controller]
-        DNSEp[DNSEndpoint CR<br/>home.example.com → WAN IP]
-        ExtDNS[external-dns]
-    end
-
-    Router[Router<br/>UPnP IGD]
-    DNS[DNS Provider<br/>Route53 / Cloudflare]
-
-    Controller -->|SOAP: AddPortMapping| Router
-    Controller -->|patch targets with WAN IP| DNSEp
-    ExtDNS -->|update A record| DNS
+graph LR
+    Router[Router<br/>UPnP IGD] -->|WAN IP| Controller[upnp-controller]
+    Controller -->|patch targets| DNSEp[DNSEndpoint CR]
+    DNSEp -->|reconcile| ExtDNS[external-dns]
+    ExtDNS -->|update A record| DNS[DNS Provider]
 ```
 
 ## How it works
