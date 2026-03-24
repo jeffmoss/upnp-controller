@@ -1,12 +1,12 @@
 # upnp-controller
 
-A Kubernetes controller that automatically exposes cluster services to the internet through your home router's UPnP port mapping. Annotate a Service, and the controller programs your router — no manual port forwarding needed. Lightweight: ~3 MiB RAM, single binary.
+A Kubernetes controller that automatically exposes cluster services to the internet through your home router's UPnP port mapping. Annotate a Service, and the controller programs your router — no manual port forwarding needed. Supports both TCP and UDP (for HTTP/3/QUIC, game servers, DNS, etc.). Lightweight: ~3-4 MiB RAM, single binary.
 
 ```mermaid
 graph LR
     Internet((Internet))
     Router[Router<br/>UPnP IGD]
-    Controller[upnp-controller<br/>TCP proxy]
+    Controller[upnp-controller<br/>TCP/UDP proxy]
     Service[Service<br/>ClusterIP]
     Pod1[Pod]
     Pod2[Pod]
@@ -44,7 +44,7 @@ graph LR
 
 The controller runs with `hostNetwork: true` on a cluster node that has LAN access to your router. It discovers the router via SSDP multicast, then:
 
-1. **Annotation-driven**: annotate any Service with `upnp-controller.io/port-forward: "80,443"` and the controller starts a local TCP proxy, programs the router via UPnP, and traffic flows from the internet to your pods
+1. **Annotation-driven**: annotate any Service with `upnp-controller.io/port-forward: "80,443"` and the controller starts a local proxy (TCP or UDP, matching the Service port protocol), programs the router via UPnP, and traffic flows from the internet to your pods
 2. **CRD-driven**: create `PortMapping` CRDs directly for non-Kubernetes hosts (NAS, game server, etc.)
 3. **Self-healing**: mappings are automatically renewed before lease expiry, and the controller re-programs the router on restart
 
@@ -103,6 +103,34 @@ upnp-controller.io/port-forward: "443,80"
 # Remap: externalPort:servicePort
 upnp-controller.io/port-forward: "8080:80,8443:443"
 ```
+
+The protocol (TCP/UDP) is automatically detected from the Service port definition. If a port is defined with both TCP and UDP (e.g., port 443 for HTTP/2 + HTTP/3), both protocols are forwarded automatically.
+
+### Mixed-protocol services (HTTP/3)
+
+For HTTP/3/QUIC support, your Service needs port 443 defined for both TCP and UDP:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: traefik
+  annotations:
+    upnp-controller.io/port-forward: "true"
+spec:
+  ports:
+    - name: web
+      port: 80
+      protocol: TCP
+    - name: websecure
+      port: 443
+      protocol: TCP
+    - name: websecure-udp
+      port: 443
+      protocol: UDP
+```
+
+This creates three PortMappings: 80/TCP, 443/TCP, and 443/UDP. Mixed-protocol Services are supported in Kubernetes 1.26+ (GA).
 
 ### Manual PortMapping (non-Kubernetes hosts)
 

@@ -376,8 +376,8 @@ async fn reconcile_service(
         let name = &desired_names[i];
         let target = format!("{}:{}", cluster_ip, internal_port);
 
-        // Start or update the TCP proxy
-        let proxy_port = match ctx.proxy_manager.ensure_proxy(name, &target).await {
+        // Start or update the proxy
+        let proxy_port = match ctx.proxy_manager.ensure_proxy(name, &target, protocol).await {
             Ok(port) => port,
             Err(e) => {
                 warn!("Failed to start proxy for {}: {}", name, e);
@@ -526,7 +526,7 @@ async fn reconcile_pod(
         let name = &desired_names[i];
         let target = format!("{}:{}", pod_ip, internal_port);
 
-        let proxy_port = match ctx.proxy_manager.ensure_proxy(name, &target).await {
+        let proxy_port = match ctx.proxy_manager.ensure_proxy(name, &target, protocol).await {
             Ok(port) => port,
             Err(e) => {
                 warn!("Failed to start proxy for {}: {}", name, e);
@@ -626,8 +626,9 @@ fn parse_service_annotation(
     parse_port_list(value, |port| {
         service_ports
             .iter()
-            .find(|sp| sp.port as u16 == port)
+            .filter(|sp| sp.port as u16 == port)
             .map(|sp| parse_k8s_protocol(sp.protocol.as_deref()))
+            .collect()
     })
 }
 
@@ -649,16 +650,18 @@ fn parse_pod_annotation(
     parse_port_list(value, |port| {
         container_ports
             .iter()
-            .find(|cp| cp.container_port as u16 == port)
+            .filter(|cp| cp.container_port as u16 == port)
             .map(|cp| parse_k8s_protocol(cp.protocol.as_deref()))
+            .collect()
     })
 }
 
 /// Parse a comma-separated port list: "443,80" or "8080:80,8443:443".
-/// The `lookup_protocol` closure finds the protocol for a given service/container port.
+/// The `lookup_protocols` closure returns all protocols for a given port number,
+/// supporting mixed-protocol services (e.g., port 443 as both TCP and UDP for HTTP/3).
 fn parse_port_list(
     value: &str,
-    lookup_protocol: impl Fn(u16) -> Option<Protocol>,
+    lookup_protocols: impl Fn(u16) -> Vec<Protocol>,
 ) -> Vec<(u16, u16, Protocol)> {
     let mut result = Vec::new();
     for part in value.split(',') {
@@ -668,12 +671,18 @@ fn parse_port_list(
         }
         if let Some((ext, svc)) = part.split_once(':') {
             if let (Ok(ext_port), Ok(svc_port)) = (ext.trim().parse::<u16>(), svc.trim().parse::<u16>()) {
-                let protocol = lookup_protocol(svc_port).unwrap_or(Protocol::Tcp);
-                result.push((ext_port, svc_port, protocol));
+                let protocols = lookup_protocols(svc_port);
+                if protocols.is_empty() {
+                    result.push((ext_port, svc_port, Protocol::Tcp));
+                } else {
+                    for protocol in protocols {
+                        result.push((ext_port, svc_port, protocol));
+                    }
+                }
             }
         } else if let Ok(port) = part.parse::<u16>() {
-            // Only include if the port exists on the object
-            if let Some(protocol) = lookup_protocol(port) {
+            let protocols = lookup_protocols(port);
+            for protocol in protocols {
                 result.push((port, port, protocol));
             }
         }
@@ -701,10 +710,26 @@ mod tests {
         ]
     }
 
+    /// Service ports with mixed protocols on port 443 (HTTP/2 + HTTP/3/QUIC)
+    fn test_mixed_protocol_ports() -> Vec<ServicePort> {
+        vec![
+            ServicePort { port: 80, protocol: Some("TCP".to_string()), ..Default::default() },
+            ServicePort { port: 443, protocol: Some("TCP".to_string()), ..Default::default() },
+            ServicePort { port: 443, protocol: Some("UDP".to_string()), ..Default::default() },
+        ]
+    }
+
     fn test_container_ports() -> Vec<ContainerPort> {
         vec![
             ContainerPort { container_port: 8080, protocol: Some("TCP".to_string()), ..Default::default() },
             ContainerPort { container_port: 9090, protocol: Some("TCP".to_string()), ..Default::default() },
+        ]
+    }
+
+    fn test_mixed_container_ports() -> Vec<ContainerPort> {
+        vec![
+            ContainerPort { container_port: 443, protocol: Some("TCP".to_string()), ..Default::default() },
+            ContainerPort { container_port: 443, protocol: Some("UDP".to_string()), ..Default::default() },
         ]
     }
 
@@ -769,10 +794,53 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_service_annotation_true_mixed_protocol() {
+        let ports = test_mixed_protocol_ports();
+        let result = parse_service_annotation("true", &ports);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0], (80, 80, Protocol::Tcp));
+        assert_eq!(result[1], (443, 443, Protocol::Tcp));
+        assert_eq!(result[2], (443, 443, Protocol::Udp));
+    }
+
+    #[test]
+    fn test_parse_service_annotation_selective_mixed_protocol() {
+        let ports = test_mixed_protocol_ports();
+        let result = parse_service_annotation("443", &ports);
+        // Should emit both TCP and UDP entries for port 443
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], (443, 443, Protocol::Tcp));
+        assert_eq!(result[1], (443, 443, Protocol::Udp));
+    }
+
+    #[test]
+    fn test_parse_service_annotation_remap_mixed_protocol() {
+        let ports = test_mixed_protocol_ports();
+        let result = parse_service_annotation("8443:443", &ports);
+        // Remap should also emit both protocols
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], (8443, 443, Protocol::Tcp));
+        assert_eq!(result[1], (8443, 443, Protocol::Udp));
+    }
+
+    #[test]
+    fn test_parse_pod_annotation_selective_mixed_protocol() {
+        let ports = test_mixed_container_ports();
+        let result = parse_pod_annotation("443", &ports);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], (443, 443, Protocol::Tcp));
+        assert_eq!(result[1], (443, 443, Protocol::Udp));
+    }
+
+    #[test]
     fn test_pm_name_for_owner() {
         assert_eq!(
             pm_name_for_owner("default", "traefik", 443, &Protocol::Tcp),
             "default-traefik-443-tcp"
+        );
+        assert_eq!(
+            pm_name_for_owner("default", "traefik", 443, &Protocol::Udp),
+            "default-traefik-443-udp"
         );
     }
 }
